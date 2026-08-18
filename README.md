@@ -16,19 +16,21 @@
 
 ## 一键部署 / 升级最新版
 
-Debian / Ubuntu，使用 root：
+Debian / Ubuntu，使用 root，整段复制：
 
 ```bash
+apt update && apt install -y curl ca-certificates && \
 bash <(curl -fsSL https://raw.githubusercontent.com/kkx999/xvpn/main/install-online.sh)
 ```
 
-全新安装会询问是否配置域名；已有安装会自动进入升级模式并保留数据。
+全新安装会自动补齐运行依赖并询问是否配置域名；已有安装会自动进入升级模式并保留数据。
 
 ## 指定版本
 
 指定版本需要已发布为 GitHub Release 或 Tag：
 
 ```bash
+apt update && apt install -y curl ca-certificates && \
 bash <(curl -fsSL https://raw.githubusercontent.com/kkx999/xvpn/main/install-online.sh) --version v1.0.0
 ```
 
