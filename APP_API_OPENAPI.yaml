@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
-  title: VPN Panel Android App API
-  version: 1.0.0
+  title: XVPN Panel Android App API
+  version: 1.2.0
   description: Invitation-only Android VPN client API. Native App uses Bearer tokens only.
 servers:
   - url: https://panel.example.com/api/v1
@@ -11,7 +11,7 @@ paths:
       summary: Public API configuration
       responses:
         '200':
-          description: API status and registration configuration
+          description: API status, registration configuration, traffic-report interval and panel timezone
   /health:
     get:
       summary: Health check
@@ -38,7 +38,7 @@ paths:
         '429': {description: Rate limited}
   /login:
     post:
-      summary: Login
+      summary: Login as App user or administrator
       requestBody:
         required: true
         content:
@@ -77,7 +77,7 @@ paths:
         '200': {description: Node payload}
   /change-password:
     post:
-      summary: Change user password and rotate all tokens
+      summary: Change current user or administrator password and rotate tokens
       security: [{bearerAuth: []}]
       requestBody:
         required: true
@@ -98,6 +98,38 @@ paths:
       security: [{bearerAuth: []}]
       responses:
         '200': {description: Logged out}
+  /traffic/report:
+    post:
+      summary: Report cumulative Android traffic counters
+      description: Normal user tokens only. Panel calculates a delta from the previous cumulative counter for the same device/session/node and aggregates user plus node traffic.
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [device_id, session_id, node_id, upload_total_bytes, download_total_bytes]
+              properties:
+                device_id: {type: string, minLength: 8, maxLength: 128}
+                session_id: {type: string, minLength: 8, maxLength: 128}
+                node_id: {type: integer, minimum: 1, description: Integer id from /nodes or /app/bootstrap}
+                upload_total_bytes: {type: integer, format: int64, minimum: 0}
+                download_total_bytes: {type: integer, format: int64, minimum: 0}
+                app_version: {type: string, maxLength: 64}
+      responses:
+        '200': {description: Report accepted and aggregated using the configured panel timezone day boundary}
+        '400': {description: Invalid counter, identifiers, or stale/unknown node_id}
+        '401': {description: Token invalid or expired}
+        '403': {description: Account disabled or administrator token}
+  /traffic/summary:
+    get:
+      summary: Current server-side traffic summary for the logged-in user
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: Today, month and total upload/download counters plus timezone/day/month keys}
+        '401': {description: Token invalid or expired}
+        '403': {description: Administrator token is not counted as a user}
 components:
   securitySchemes:
     bearerAuth:

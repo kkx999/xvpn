@@ -4,7 +4,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION")"
 [[ -n "$VERSION" ]] || { echo "VERSION 为空" >&2; exit 1; }
 OUT_DIR="$ROOT/dist"
-PKG="vpn-panel-v${VERSION}.zip"
+PKG="xvpn-panel-v${VERSION}.zip"
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
 python3 - "$ROOT" "$OUT_DIR/$PKG" "$VERSION" <<'PY'
@@ -13,8 +13,7 @@ from pathlib import Path
 root=Path(sys.argv[1]).resolve(); out=Path(sys.argv[2]).resolve(); version=sys.argv[3]
 ignore_dirs={'.git','.venv','dist','__pycache__','.pytest_cache','.idea','.vscode'}
 ignore_names={'.DS_Store'}
-suffix=version.rsplit("-",1)[-1] if "-" in version else version
-prefix=f"vpn-panel-{suffix}/"
+prefix=f"xvpn-panel-{version}/"
 with zipfile.ZipFile(out,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=9) as z:
     for p in sorted(root.rglob('*')):
         rel=p.relative_to(root)

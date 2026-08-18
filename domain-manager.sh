@@ -2,12 +2,12 @@
 set -Eeuo pipefail
 
 APP_PORT="26818"
-ENV_FILE="/etc/vpn-panel.env"
-NGINX_SITE="/etc/nginx/sites-available/vpn-panel"
-NGINX_LINK="/etc/nginx/sites-enabled/vpn-panel"
+ENV_FILE="/etc/xvpn-panel.env"
+NGINX_SITE="/etc/nginx/sites-available/xvpn-panel"
+NGINX_LINK="/etc/nginx/sites-enabled/xvpn-panel"
 
 C_RESET='\033[0m'; C_BLUE='\033[38;5;75m'; C_GREEN='\033[38;5;78m'; C_YELLOW='\033[38;5;214m'; C_RED='\033[38;5;203m'; C_BOLD='\033[1m'; C_DIM='\033[2m'; C_CYAN='\033[38;5;81m'
-say(){ echo -e "$*"; }; ok(){ say "${C_GREEN}✓${C_RESET} $*"; }; info(){ say "${C_BLUE}▶${C_RESET} $*"; }; warn(){ say "${C_YELLOW}!${C_RESET} $*"; }; err(){ say "${C_RED}✗${C_RESET} $*" >&2; }
+say(){ echo -e "$*"; }; ok(){ say "${C_GREEN}[OK]${C_RESET} $*"; }; info(){ say "${C_BLUE}[INFO]${C_RESET} $*"; }; warn(){ say "${C_YELLOW}!${C_RESET} $*"; }; err(){ say "${C_RED}[ERROR]${C_RESET} $*" >&2; }
 [[ ${EUID} -eq 0 ]] || { err "请使用 root 运行。"; exit 1; }
 
 current_domain(){
@@ -17,7 +17,7 @@ current_domain(){
 valid_domain(){ [[ "$1" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$ ]]; }
 
 clear || true
-say "${C_BOLD}${C_BLUE}VPN Panel 域名 / HTTPS${C_RESET}"
+say "${C_BOLD}${C_BLUE}XVPN Panel 域名 / HTTPS${C_RESET}"
 say "────────────────────────────────────────"
 OLD_DOMAIN="$(current_domain)"
 if [[ -n "$OLD_DOMAIN" ]]; then
@@ -73,7 +73,7 @@ while true; do
 done
 
 STAMP="$(date +%Y%m%d-%H%M%S)"
-BACKUP="/tmp/vpn-panel-nginx-$STAMP.conf"
+BACKUP="/tmp/xvpn-panel-nginx-$STAMP.conf"
 [[ -f "$NGINX_SITE" ]] && cp -a "$NGINX_SITE" "$BACKUP"
 
 cat > "$NGINX_SITE" <<NGINX
@@ -112,7 +112,7 @@ if certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --register-unsafel
     grep -q '^COOKIE_SECURE=' "$ENV_FILE" && sed -i 's/^COOKIE_SECURE=.*/COOKIE_SECURE=1/' "$ENV_FILE" || echo 'COOKIE_SECURE=1' >> "$ENV_FILE"
     chmod 600 "$ENV_FILE"
   fi
-  systemctl restart vpn-panel
+  systemctl restart xvpn-panel
   systemctl enable --now certbot.timer >/dev/null 2>&1 || true
   ok "域名与 HTTPS 配置完成"
   echo

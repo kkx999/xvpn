@@ -5,9 +5,9 @@ BRANCH="main"
 TMP="$(mktemp -d /tmp/xvpn-online-XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
 
-fail(){ echo "✗ $*" >&2; exit 1; }
-ok(){ echo "✓ $*"; }
-info(){ echo "▶ $*"; }
+fail(){ echo "[ERROR] $*" >&2; exit 1; }
+ok(){ echo "[OK] $*"; }
+info(){ echo "[INFO] $*"; }
 warn(){ echo "! $*"; }
 [[ ${EUID} -eq 0 ]] || fail "请使用 root 运行。"
 
@@ -16,7 +16,7 @@ case "${1:-}" in
   "") ;;
   --version|-v) REQUESTED="${2:-}"; [[ -n "$REQUESTED" ]] || fail "缺少版本号。" ;;
   v*|[0-9]*) REQUESTED="$1" ;;
-  *) fail "用法：install-online.sh [--version v1.0.0]" ;;
+  *) fail "用法：install-online.sh [--version v1.2.0]" ;;
 esac
 
 if ! command -v curl >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
@@ -26,7 +26,11 @@ fi
 
 normalize_version(){ local v="${1#v}"; v="${v#V}"; echo "$v"; }
 valid_version(){ [[ "$1" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([._-]?[A-Za-z]+([._-]?[0-9]+)?)?$ ]]; }
-current_version(){ [[ -f /opt/vpn-panel/VERSION ]] && tr -d '[:space:]' < /opt/vpn-panel/VERSION || true; }
+current_version(){
+  if [[ -f /opt/xvpn-panel/VERSION ]]; then tr -d '[:space:]' < /opt/xvpn-panel/VERSION
+  elif [[ -f /opt/vpn-panel/VERSION ]]; then tr -d '[:space:]' < /opt/vpn-panel/VERSION
+  fi
+}
 version_compare(){ python3 - "$1" "$2" <<'PY'
 import re,sys
 def k(v):
@@ -39,8 +43,7 @@ PY
 }
 
 echo "========================================"
-echo "       VPN Panel 一键部署 / 升级"
-echo "       GitHub: $REPO"
+echo "       XVPN Panel 一键部署 / 升级"
 echo "========================================"
 
 ARCHIVE="$TMP/source.zip"
@@ -49,12 +52,12 @@ SOURCE_LABEL=""
 
 if [[ -z "$REQUESTED" ]]; then
   TARGET_VERSION="$(curl -fsSL --connect-timeout 8 --max-time 15 "https://raw.githubusercontent.com/$REPO/$BRANCH/VERSION" 2>/dev/null | tr -d '[:space:]' || true)"
-  [[ -n "$TARGET_VERSION" ]] || fail "无法读取 GitHub VERSION，请确认 main 分支已上传源码。"
-  info "目标版本：v$TARGET_VERSION（main）"
+  [[ -n "$TARGET_VERSION" ]] || fail "无法读取在线版本信息，请确认发布源已更新。"
+  info "目标版本：v$TARGET_VERSION"
   curl -fL --connect-timeout 10 --max-time 180 "https://github.com/$REPO/archive/refs/heads/$BRANCH.zip" -o "$ARCHIVE"
-  SOURCE_LABEL="GitHub main"
+  SOURCE_LABEL="在线最新版"
 else
-  valid_version "$REQUESTED" || fail "版本格式无效，例如 v1.0.0 或 v1.0.0-rc1。"
+  valid_version "$REQUESTED" || fail "版本格式无效，例如 v1.2.0 或 v1.2.0-rc1。"
   TARGET_VERSION="$(normalize_version "$REQUESTED")"
   TAG="v$TARGET_VERSION"
   info "目标版本：$TAG"
@@ -66,35 +69,35 @@ else
     readarray -t URLS < <(python3 - "$RELEASE_JSON" "$TARGET_VERSION" <<'PY'
 import json,sys
 j=json.load(open(sys.argv[1],encoding='utf-8')); v=sys.argv[2]
-want=f'vpn-panel-v{v}.zip'; asset=''; sums=''
+want=f'xvpn-panel-v{v}.zip'; legacy=f'vpn-panel-v{v}.zip'; asset=''; sums=''
 for a in j.get('assets',[]):
-    if a.get('name')==want: asset=a.get('browser_download_url','')
+    if a.get('name') in (want, legacy): asset=a.get('browser_download_url','')
     elif a.get('name')=='SHA256SUMS.txt': sums=a.get('browser_download_url','')
 print(asset); print(sums)
 PY
 )
     ASSET_URL="${URLS[0]:-}"; SUMS_URL="${URLS[1]:-}"
     if [[ -n "$ASSET_URL" ]]; then
-      info "来源：GitHub Release $TAG"
+      info "正在获取正式发布包：$TAG"
       curl -fL --connect-timeout 10 --max-time 180 "$ASSET_URL" -o "$ARCHIVE"
       if [[ -n "$SUMS_URL" ]]; then
         curl -fsSL --connect-timeout 8 --max-time 30 "$SUMS_URL" -o "$TMP/SHA256SUMS.txt"
-        EXPECTED="$(awk -v n="vpn-panel-v${TARGET_VERSION}.zip" '$2==n || $2=="*"n {print $1; exit}' "$TMP/SHA256SUMS.txt")"
+        EXPECTED="$(awk -v n="xvpn-panel-v${TARGET_VERSION}.zip" -v old="vpn-panel-v${TARGET_VERSION}.zip" '$2==n || $2=="*"n || $2==old || $2=="*"old {print $1; exit}' "$TMP/SHA256SUMS.txt")"
         if [[ -n "$EXPECTED" ]]; then
           ACTUAL="$(sha256sum "$ARCHIVE" | awk '{print $1}')"
           [[ "$ACTUAL" == "$EXPECTED" ]] || fail "SHA-256 校验失败，已停止安装。"
           ok "SHA-256 校验通过"
         fi
       fi
-      SOURCE_LABEL="GitHub Release $TAG"
+      SOURCE_LABEL="正式发布包 $TAG"
     fi
   fi
 
   if [[ ! -s "$ARCHIVE" ]]; then
-    warn "Release 资产未找到，尝试 Git Tag：$TAG"
+    warn "正式发布包未找到，尝试版本标签：$TAG"
     curl -fL --connect-timeout 10 --max-time 180 "https://github.com/$REPO/archive/refs/tags/$TAG.zip" -o "$ARCHIVE" \
-      || fail "找不到版本 $TAG。请先创建同名 GitHub Release 或 Tag。"
-    SOURCE_LABEL="Git Tag $TAG"
+      || fail "找不到版本 $TAG。请确认该版本已发布。"
+    SOURCE_LABEL="版本标签 $TAG"
   fi
 fi
 

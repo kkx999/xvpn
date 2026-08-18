@@ -1,13 +1,22 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-APP_NAME="vpn-panel"
-APP_DIR="/opt/vpn-panel"
-DATA_DIR="/var/lib/vpn-panel"
-ENV_FILE="/etc/vpn-panel.env"
-SERVICE_FILE="/etc/systemd/system/vpn-panel.service"
-NGINX_SITE="/etc/nginx/sites-available/vpn-panel"
-BACKUP_DIR="/var/backups/vpn-panel"
+APP_NAME="xvpn-panel"
+APP_DIR="/opt/xvpn-panel"
+DATA_DIR="/var/lib/xvpn-panel"
+ENV_FILE="/etc/xvpn-panel.env"
+SERVICE_FILE="/etc/systemd/system/xvpn-panel.service"
+NGINX_SITE="/etc/nginx/sites-available/xvpn-panel"
+BACKUP_DIR="/var/backups/xvpn-panel"
+LEGACY_APP_DIR="/opt/vpn-panel"
+LEGACY_DATA_DIR="/var/lib/vpn-panel"
+LEGACY_ENV_FILE="/etc/vpn-panel.env"
+LEGACY_SERVICE="vpn-panel.service"
+LEGACY_BACKUP_SERVICE="vpn-panel-backup.service"
+LEGACY_BACKUP_TIMER="vpn-panel-backup.timer"
+LEGACY_NGINX_SITE="/etc/nginx/sites-available/vpn-panel"
+LEGACY_NGINX_LINK="/etc/nginx/sites-enabled/vpn-panel"
+LEGACY_BACKUP_DIR="/var/backups/vpn-panel"
 APP_PORT="26818"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FRESH_INSTALL=0
@@ -17,24 +26,33 @@ USE_CF="0"
 HTTPS_OK="0"
 UPGRADE_MODE="0"
 RECONFIGURE_DOMAIN="0"
+LEGACY_SERVICE_WAS_ACTIVE="0"
 INSTALL_VERSION="$(tr -d '[:space:]' < "$SCRIPT_DIR/VERSION" 2>/dev/null || echo unknown)"
 [[ "${1:-}" == "--reconfigure-domain" ]] && RECONFIGURE_DOMAIN="1"
 
 C_RESET='\033[0m'; C_BLUE='\033[1;34m'; C_GREEN='\033[1;32m'; C_YELLOW='\033[1;33m'; C_RED='\033[1;31m'; C_DIM='\033[2m'
-info(){ echo -e "${C_BLUE}▶${C_RESET} $*"; }
-ok(){ echo -e "${C_GREEN}✓${C_RESET} $*"; }
+info(){ echo -e "${C_BLUE}[INFO]${C_RESET} $*"; }
+ok(){ echo -e "${C_GREEN}[OK]${C_RESET} $*"; }
 warn(){ echo -e "${C_YELLOW}!${C_RESET} $*"; }
-fail(){ echo -e "${C_RED}✗${C_RESET} $*" >&2; exit 1; }
+fail(){ echo -e "${C_RED}[ERROR]${C_RESET} $*" >&2; exit 1; }
 
-trap 'echo; fail "安装在第 $LINENO 行失败。可执行：journalctl -u vpn-panel -n 100 --no-pager 查看服务日志。"' ERR
+on_error(){
+  local line="${1:-unknown}"
+  trap - ERR
+  if [[ "${LEGACY_SERVICE_WAS_ACTIVE:-0}" == "1" ]] && ! systemctl is-active --quiet xvpn-panel 2>/dev/null; then
+    systemctl start "$LEGACY_SERVICE" >/dev/null 2>&1 || true
+  fi
+  fail "安装在第 $line 行失败。可执行：journalctl -u xvpn-panel -n 100 --no-pager 查看服务日志。"
+}
+trap 'on_error $LINENO' ERR
 
 [[ ${EUID} -eq 0 ]] || fail "请使用 root 运行：bash install.sh"
-[[ -f "$SCRIPT_DIR/run.py" && -d "$SCRIPT_DIR/app" ]] || fail "请在解压后的 VPN Panel 发布目录内运行 install.sh"
-[[ "$SCRIPT_DIR" != "$APP_DIR" ]] || fail "请不要直接在 /opt/vpn-panel 内运行安装器；请从解压目录运行。"
+[[ -f "$SCRIPT_DIR/run.py" && -d "$SCRIPT_DIR/app" ]] || fail "请在解压后的 XVPN Panel 发布目录内运行 install.sh"
+[[ "$SCRIPT_DIR" != "$APP_DIR" ]] || fail "请不要直接在 /opt/xvpn-panel 内运行安装器；请从解压目录运行。"
 
 clear || true
 echo "========================================"
-echo "        VPN Panel v$INSTALL_VERSION"
+echo "        XVPN Panel v$INSTALL_VERSION"
 echo "          自动安装程序"
 echo "========================================"
 echo
@@ -55,12 +73,38 @@ apt-get update -y
 apt-get install -y python3 python3-venv python3-pip nginx certbot python3-certbot-nginx curl ca-certificates sqlite3 dnsutils tzdata unzip
 ok "系统依赖完成"
 
+# One-time migration from legacy pre-XVPN internal names.
+LEGACY_MIGRATED=0
+if [[ ! -f "$ENV_FILE" && -f "$LEGACY_ENV_FILE" ]]; then
+  cp -a "$LEGACY_ENV_FILE" "$ENV_FILE"
+  LEGACY_MIGRATED=1
+fi
+if [[ ! -f "$DATA_DIR/panel.db" && -f "$LEGACY_DATA_DIR/panel.db" ]]; then
+  mkdir -p "$DATA_DIR"
+  cp -a "$LEGACY_DATA_DIR/." "$DATA_DIR/"
+  LEGACY_MIGRATED=1
+fi
+if [[ ! -f "$NGINX_SITE" && -f "$LEGACY_NGINX_SITE" ]]; then
+  cp -a "$LEGACY_NGINX_SITE" "$NGINX_SITE"
+  ln -sfn "$NGINX_SITE" /etc/nginx/sites-enabled/xvpn-panel
+  rm -f "$LEGACY_NGINX_LINK"
+  LEGACY_MIGRATED=1
+fi
+if [[ -d "$LEGACY_BACKUP_DIR" && ! -e "$BACKUP_DIR" ]]; then
+  mkdir -p "$(dirname "$BACKUP_DIR")"
+  cp -a "$LEGACY_BACKUP_DIR" "$BACKUP_DIR"
+  LEGACY_MIGRATED=1
+fi
+if [[ "$LEGACY_MIGRATED" == "1" ]]; then
+  ok "检测到旧版内部命名，已迁移到 XVPN 路径；现有数据和配置已保留"
+fi
+
 if [[ -f "$ENV_FILE" && -f "$DATA_DIR/panel.db" ]]; then
   UPGRADE_MODE="1"
   if [[ "$RECONFIGURE_DOMAIN" != "1" && -f "$NGINX_SITE" ]]; then
     DOMAIN="$(awk '/^[[:space:]]*server_name[[:space:]]+/ {gsub(/;/, "", $2); if ($2 != "_") {print $2; exit}}' "$NGINX_SITE" 2>/dev/null || true)"
   fi
-  ok "检测到现有 VPN Panel，将进入原地升级模式；数据库、加密密钥和管理员密码都会保留"
+  ok "检测到现有 XVPN Panel，将进入原地升级模式；数据库、加密密钥和管理员密码都会保留"
 fi
 
 PUBLIC_IP="$(curl -4fsS --max-time 8 https://api.ipify.org 2>/dev/null || true)"
@@ -71,9 +115,9 @@ fi
 info "[2/7] 配置访问域名"
 if [[ "$UPGRADE_MODE" == "1" && "$RECONFIGURE_DOMAIN" != "1" ]]; then
   if [[ -n "$DOMAIN" ]]; then
-    ok "升级沿用现有域名：$DOMAIN（如需更换，安装完成后执行 vpn -> 域名 / HTTPS 管理）"
+    ok "升级沿用现有域名：$DOMAIN（如需更换，安装完成后执行 xvpn -> 域名 / HTTPS 管理）"
   else
-    warn "升级模式未识别到域名，将保留现有 Web 配置；稍后可执行 vpn domain 配置。"
+    warn "升级模式未识别到域名，将保留现有 Web 配置；稍后可执行 xvpn domain 配置。"
   fi
 else
   echo
@@ -81,7 +125,7 @@ else
   read -r -p "是否现在配置域名并自动申请 HTTPS？ [Y/n]: " want_domain
   if [[ "${want_domain,,}" == "n" || "${want_domain,,}" == "no" ]]; then
     DOMAIN=""
-    warn "已跳过域名配置，将先使用 HTTP；安装后执行 vpn domain 可随时配置 HTTPS。"
+    warn "已跳过域名配置，将先使用 HTTP；安装后执行 xvpn domain 可随时配置 HTTPS。"
   else
     while true; do
       read -r -p "请输入 Panel 域名（例如 panel.example.com）： " DOMAIN
@@ -124,16 +168,16 @@ mkdir -p "$APP_DIR" "$DATA_DIR" "$BACKUP_DIR"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 if [[ -f "$ENV_FILE" || -f "$DATA_DIR/panel.db" || -f "$APP_DIR/data/panel.db" ]]; then
   mkdir -p "$BACKUP_DIR/$STAMP"
-  [[ -f "$ENV_FILE" ]] && cp -a "$ENV_FILE" "$BACKUP_DIR/$STAMP/vpn-panel.env"
+  [[ -f "$ENV_FILE" ]] && cp -a "$ENV_FILE" "$BACKUP_DIR/$STAMP/xvpn-panel.env"
   [[ -f "$DATA_DIR/panel.db" ]] && cp -a "$DATA_DIR/panel.db" "$BACKUP_DIR/$STAMP/panel.db"
-  [[ -f "$APP_DIR/data/panel.db" ]] && cp -a "$APP_DIR/data/panel.db" "$BACKUP_DIR/$STAMP/panel-dev1.db"
+  [[ -f "$APP_DIR/data/panel.db" ]] && cp -a "$APP_DIR/data/panel.db" "$BACKUP_DIR/$STAMP/panel-legacy.db"
   ok "旧配置/数据库已备份到 $BACKUP_DIR/$STAMP"
 fi
 
 # Older-version database location migration.
 if [[ ! -f "$DATA_DIR/panel.db" && -f "$APP_DIR/data/panel.db" ]]; then
   cp -a "$APP_DIR/data/panel.db" "$DATA_DIR/panel.db"
-  ok "已迁移 dev1 数据库"
+  ok "已迁移旧版数据库"
 fi
 # Persistent data stays outside the application directory during upgrades.
 rm -rf "$APP_DIR/data" 2>/dev/null || true
@@ -146,25 +190,25 @@ cp -a "$SCRIPT_DIR/requirements.txt" "$APP_DIR/"
 cp -a "$SCRIPT_DIR/reset-admin-password.py" "$APP_DIR/"
 cp -a "$SCRIPT_DIR/backup-worker.py" "$APP_DIR/"
 cp -a "$SCRIPT_DIR/VERSION" "$APP_DIR/"
-cp -a "$SCRIPT_DIR/vpn" "$APP_DIR/"
+cp -a "$SCRIPT_DIR/xvpn" "$APP_DIR/"
 cp -a "$SCRIPT_DIR/domain-manager.sh" "$APP_DIR/"
-chmod 755 "$APP_DIR/vpn" "$APP_DIR/domain-manager.sh"
-ln -sfn "$APP_DIR/vpn" /usr/local/bin/vpn
-rm -f /etc/vpn-panel-update.conf 2>/dev/null || true
+chmod 755 "$APP_DIR/xvpn" "$APP_DIR/domain-manager.sh"
+ln -sfn "$APP_DIR/xvpn" /usr/local/bin/xvpn
+rm -f /etc/xvpn-panel-update.conf /etc/vpn-panel-update.conf 2>/dev/null || true
 rm -rf "$APP_DIR/app/__pycache__"
 
-if ! id -u vpn-panel >/dev/null 2>&1; then
-  useradd --system --home "$APP_DIR" --shell /usr/sbin/nologin vpn-panel
+if ! id -u xvpn-panel >/dev/null 2>&1; then
+  useradd --system --home "$APP_DIR" --shell /usr/sbin/nologin xvpn-panel
 fi
 chown -R root:root "$APP_DIR"
-chown -R vpn-panel:vpn-panel "$DATA_DIR"
+chown -R xvpn-panel:xvpn-panel "$DATA_DIR"
 chmod 750 "$DATA_DIR"
 ok "应用目录完成"
-ok "已安装管理命令：vpn"
+ok "已安装管理命令：xvpn"
 
 info "[4/7] 创建 Python 环境与安全配置"
 if [[ -f "$DATA_DIR/panel.db" && ! -f "$ENV_FILE" ]]; then
-  fail "检测到已有数据库但 /etc/vpn-panel.env 丢失。为避免生成新 FERNET_KEY 导致旧节点无法解密，请先恢复安全配置备份。"
+  fail "检测到已有数据库但 /etc/xvpn-panel.env 丢失。为避免生成新 FERNET_KEY 导致旧节点无法解密，请先恢复安全配置备份。"
 fi
 rm -rf "$APP_DIR/.venv"
 python3 -m venv "$APP_DIR/.venv"
@@ -189,7 +233,7 @@ SECRET_KEY=$SECRET_KEY
 FERNET_KEY=$FERNET_KEY
 DATABASE_PATH=$DATA_DIR/panel.db
 ADMIN_PASSWORD=$ADMIN_PASSWORD
-PANEL_NAME=VPN Panel
+PANEL_NAME=XVPN Panel
 PANEL_SUBTITLE=私人访问控制台
 ADMIN_ALLOWED_IPS=
 TRUST_PROXY=1
@@ -229,15 +273,29 @@ PY2
   ok "检测到已有安全配置，已保留原加密密钥"
 fi
 
+# Rename only the untouched historical default; custom panel names are preserved.
+if grep -q '^PANEL_NAME=VPN Panel$' "$ENV_FILE" 2>/dev/null; then
+  sed -i 's/^PANEL_NAME=VPN Panel$/PANEL_NAME=XVPN Panel/' "$ENV_FILE"
+fi
+if [[ -f "$DATA_DIR/panel.db" ]]; then
+  sqlite3 "$DATA_DIR/panel.db" "UPDATE system_settings SET value='XVPN Panel' WHERE key='panel_name' AND value='VPN Panel';" 2>/dev/null || true
+fi
+
+if systemctl is-active --quiet "$LEGACY_SERVICE" 2>/dev/null; then
+  LEGACY_SERVICE_WAS_ACTIVE="1"
+  systemctl stop "$LEGACY_SERVICE"
+fi
+systemctl stop "$LEGACY_BACKUP_TIMER" >/dev/null 2>&1 || true
+
 cat > "$SERVICE_FILE" <<EOF
 [Unit]
-Description=VPN Panel
+Description=XVPN Panel
 After=network.target
 
 [Service]
 Type=simple
-User=vpn-panel
-Group=vpn-panel
+User=xvpn-panel
+Group=xvpn-panel
 WorkingDirectory=$APP_DIR
 EnvironmentFile=$ENV_FILE
 ExecStart=$APP_DIR/.venv/bin/gunicorn --workers 1 --threads 4 --bind 127.0.0.1:$APP_PORT --access-logfile - --error-logfile - run:app
@@ -253,27 +311,32 @@ ReadWritePaths=$DATA_DIR
 WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
-systemctl enable vpn-panel >/dev/null
-systemctl restart vpn-panel
+systemctl enable xvpn-panel >/dev/null
+systemctl restart xvpn-panel
 sleep 2
-systemctl is-active --quiet vpn-panel || { journalctl -u vpn-panel -n 80 --no-pager; fail "VPN Panel 服务启动失败"; }
+systemctl is-active --quiet xvpn-panel || { journalctl -u xvpn-panel -n 80 --no-pager; fail "XVPN Panel 服务启动失败"; }
 curl -fsS "http://127.0.0.1:$APP_PORT/api/v1/health" >/dev/null || fail "Panel 健康检查失败"
-ok "VPN Panel 服务已启动"
+ok "XVPN Panel 服务已启动"
 
-# dev8: reliable automatic-backup scheduler. The timer wakes every five minutes;
+# Remove legacy management entry points only after the new service is healthy.
+systemctl disable --now "$LEGACY_SERVICE" >/dev/null 2>&1 || true
+systemctl disable --now "$LEGACY_BACKUP_TIMER" >/dev/null 2>&1 || true
+rm -f /usr/local/bin/vpn
+
+# Reliable automatic-backup scheduler. The timer wakes every five minutes;
 # actual due-time decisions are stored in the Panel database and managed from the web UI.
-BACKUP_SERVICE_FILE="/etc/systemd/system/vpn-panel-backup.service"
-BACKUP_TIMER_FILE="/etc/systemd/system/vpn-panel-backup.timer"
+BACKUP_SERVICE_FILE="/etc/systemd/system/xvpn-panel-backup.service"
+BACKUP_TIMER_FILE="/etc/systemd/system/xvpn-panel-backup.timer"
 cat > "$BACKUP_SERVICE_FILE" <<EOF
 [Unit]
-Description=VPN Panel Scheduled Backup Check
-After=network-online.target vpn-panel.service
+Description=XVPN Panel Scheduled Backup Check
+After=network-online.target xvpn-panel.service
 Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=vpn-panel
-Group=vpn-panel
+User=xvpn-panel
+Group=xvpn-panel
 WorkingDirectory=$APP_DIR
 EnvironmentFile=$ENV_FILE
 ExecStart=$APP_DIR/.venv/bin/python $APP_DIR/backup-worker.py
@@ -286,20 +349,22 @@ EOF
 
 cat > "$BACKUP_TIMER_FILE" <<EOF
 [Unit]
-Description=Run VPN Panel Backup Scheduler
+Description=Run XVPN Panel Backup Scheduler
 
 [Timer]
 OnBootSec=3min
 OnUnitActiveSec=5min
 AccuracySec=30s
 Persistent=true
-Unit=vpn-panel-backup.service
+Unit=xvpn-panel-backup.service
 
 [Install]
 WantedBy=timers.target
 EOF
 systemctl daemon-reload
-systemctl enable --now vpn-panel-backup.timer >/dev/null
+systemctl enable --now xvpn-panel-backup.timer >/dev/null
+rm -f /etc/systemd/system/vpn-panel.service /etc/systemd/system/vpn-panel-backup.service /etc/systemd/system/vpn-panel-backup.timer
+systemctl daemon-reload
 ok "自动备份定时器已启用（网页开启自动备份后按设置执行）"
 
 # ADMIN_PASSWORD is bootstrap-only. Remove plaintext after the first successful start.
@@ -308,14 +373,14 @@ if [[ "$FRESH_INSTALL" == "1" ]]; then
 fi
 
 info "[5/7] 配置 Nginx 反向代理"
-# dev8 allows browser backup uploads up to 50MB. Upgrade existing site in place.
+# Allow browser backup uploads up to 50MB. Upgrade existing site in place.
 if [[ -f "$NGINX_SITE" ]]; then
   sed -i 's/client_max_body_size[[:space:]]\+[0-9]\+[mM];/client_max_body_size 52m;/' "$NGINX_SITE" || true
 fi
 if [[ "$UPGRADE_MODE" == "1" && "$RECONFIGURE_DOMAIN" != "1" && -f "$NGINX_SITE" ]]; then
   nginx -t
   systemctl reload nginx
-  ok "升级保留现有 Nginx / Cloudflare 配置，并已应用 dev8 备份上传限制"
+  ok "升级保留现有 Nginx / Cloudflare 配置，并已应用备份上传限制"
 else
 if [[ -n "$DOMAIN" ]]; then
   SERVER_NAME="$DOMAIN"
@@ -342,7 +407,7 @@ server {
     }
 }
 EOF
-ln -sfn "$NGINX_SITE" /etc/nginx/sites-enabled/vpn-panel
+ln -sfn "$NGINX_SITE" /etc/nginx/sites-enabled/xvpn-panel
 rm -f /etc/nginx/sites-enabled/default
 nginx -t
 systemctl enable --now nginx >/dev/null
@@ -367,7 +432,7 @@ if [[ -n "$DOMAIN" ]]; then
   if certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email --redirect; then
     HTTPS_OK=1
     grep -q '^COOKIE_SECURE=' "$ENV_FILE" && sed -i 's/^COOKIE_SECURE=.*/COOKIE_SECURE=1/' "$ENV_FILE" || echo 'COOKIE_SECURE=1' >> "$ENV_FILE"
-    systemctl restart vpn-panel
+    systemctl restart xvpn-panel
     ok "Let's Encrypt HTTPS 证书申请并安装成功"
     systemctl enable --now certbot.timer >/dev/null 2>&1 || true
   else
@@ -393,6 +458,15 @@ info "[7/7] 最终检查"
 if [[ "$HTTPS_OK" == "1" ]]; then
   curl -fsS --max-time 15 "https://$DOMAIN/api/v1/health" >/dev/null || warn "公网 HTTPS 健康检查暂未通过，可能是 DNS/Cloudflare 刚修改尚未生效"
 fi
+if [[ "${LEGACY_MIGRATED:-0}" == "1" ]]; then
+  rm -rf "$LEGACY_APP_DIR" "$LEGACY_DATA_DIR" "$LEGACY_BACKUP_DIR" 2>/dev/null || true
+  rm -f "$LEGACY_ENV_FILE" "$LEGACY_NGINX_SITE" "$LEGACY_NGINX_LINK" /usr/local/bin/vpn 2>/dev/null || true
+  if id -u vpn-panel >/dev/null 2>&1; then
+    userdel vpn-panel >/dev/null 2>&1 || true
+  fi
+  ok "旧 vpn-panel 内部路径已清理，运行环境已统一为 xvpn-panel"
+fi
+
 ok "安装流程完成"
 
 echo
@@ -416,20 +490,20 @@ fi
 if [[ "$UPGRADE_MODE" == "1" ]]; then
   echo "版本：v$INSTALL_VERSION（数据与现有密码已保留）"
 fi
-echo "管理员用户名：admin"
 if [[ "$FRESH_INSTALL" == "1" ]]; then
+  echo "管理员初始用户名：admin"
   echo "管理员初始密码：$ADMIN_PASSWORD"
   echo "提示：请立即复制保存；服务器不会继续以明文保存这个初始密码。"
 else
-  echo "管理员密码：保留现有密码（升级不会重置）"
+  echo "管理员账户：保留现有用户名与密码（升级不会重置）"
 fi
 if [[ "$USE_CF" == "1" && "$HTTPS_OK" == "1" ]]; then
   echo "Cloudflare：小云朵可保持开启，请将 SSL/TLS 设置为 Full (strict)"
 fi
 echo "========================================"
-echo "管理菜单：vpn"
-echo "GitHub：vpn check 检查新版；vpn update 部署最新版；vpn update v版本 安装指定版本"
+echo "管理菜单：xvpn"
+echo "更新：xvpn check 检查新版；xvpn update 部署最新版；xvpn update v版本 安装指定版本"
 echo "修改管理员密码：登录后台 -> 设置"
-echo "域名 / HTTPS：执行 vpn -> 域名 / HTTPS 管理"
-echo "忘记管理员密码：执行 vpn -> 重置 admin 密码"
+echo "域名 / HTTPS：执行 xvpn -> 域名 / HTTPS 管理"
+echo "忘记管理员密码：执行 xvpn -> 重置管理员密码"
 echo

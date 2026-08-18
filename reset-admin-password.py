@@ -8,7 +8,7 @@ from pathlib import Path
 from werkzeug.security import generate_password_hash
 
 
-def load_env(path="/etc/vpn-panel.env"):
+def load_env(path="/etc/xvpn-panel.env"):
     p = Path(path)
     if not p.exists():
         return
@@ -29,19 +29,23 @@ def make_password(length=14):
 
 
 load_env()
-db_path = os.environ.get("DATABASE_PATH", "/var/lib/vpn-panel/panel.db")
+db_path = os.environ.get("DATABASE_PATH", "/var/lib/xvpn-panel/panel.db")
 password = make_password()
 conn = sqlite3.connect(db_path)
-row = conn.execute("SELECT id,session_version FROM admins ORDER BY id LIMIT 1").fetchone()
+row = conn.execute("SELECT id,username,session_version FROM admins ORDER BY id LIMIT 1").fetchone()
 if not row:
     raise SystemExit("未找到管理员账户")
-next_version = int(row[1] or 1) + 1
+next_version = int(row[2] or 1) + 1
 conn.execute(
-    "UPDATE admins SET username='admin',password_hash=?,session_version=? WHERE id=?",
+    "UPDATE admins SET password_hash=?,session_version=? WHERE id=?",
     (generate_password_hash(password, method="scrypt"), next_version, row[0]),
 )
+try:
+    conn.execute("DELETE FROM admin_api_tokens WHERE admin_id=?", (row[0],))
+except sqlite3.OperationalError:
+    pass
 conn.commit()
 conn.close()
-print("管理员用户名：admin")
+print(f"管理员用户名：{row[1]}")
 print(f"新的随机密码：{password}")
 print("所有旧后台会话已失效。")

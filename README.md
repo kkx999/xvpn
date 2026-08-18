@@ -1,5 +1,7 @@
 # XVPN Panel
 
+> 当前正式版本：`v1.2.0`。
+
 邀请制私人 VPN 管理面板：管理员在网页维护节点、用户和邀请码，Android App 用户注册登录后直接使用全部启用节点。
 
 > GitHub 项目描述：邀请制私人 VPN 管理面板，支持节点管理、用户/邀请码、Android API、自动备份、Telegram、HTTPS 与一键部署。
@@ -8,22 +10,24 @@
 
 - 节点导入、重命名、国家分类与两级排序
 - 邀请码注册、可用次数、用户停用与密码管理
-- Android API：注册、登录、改密码、Bootstrap、节点下发
+- 管理员用户名 / 密码均可在后台修改
+- Android API：注册、登录、改密码、Bootstrap、节点下发、用户流量上报；管理员账户也可登录 App
 - 明暗主题、iOS 风格开关、网页化管理
-- 手动/自动备份、上传恢复、Telegram 异地备份
+- 首页今日流量概览：TOP 5 用户 / 节点排行；用户今日 / 本月 / 累计流量后台汇总与分页明细
+- 手动/自动备份、上传恢复、Telegram 异地备份与可清除运行记录
 - 域名 / Let's Encrypt HTTPS / Cloudflare 场景
-- `vpn` 中文管理菜单
+- `xvpn` 中文管理菜单
 
 ## 一键部署 / 升级最新版
 
-Debian / Ubuntu，使用 root，整段复制：
+Debian / Ubuntu，使用 root：
 
 ```bash
 apt update && apt install -y curl ca-certificates && \
 bash <(curl -fsSL https://raw.githubusercontent.com/kkx999/xvpn/main/install-online.sh)
 ```
 
-全新安装会自动补齐运行依赖并询问是否配置域名；已有安装会自动进入升级模式并保留数据。
+全新安装会询问是否配置域名；已有安装会自动进入升级模式并保留数据。
 
 ## 指定版本
 
@@ -31,27 +35,27 @@ bash <(curl -fsSL https://raw.githubusercontent.com/kkx999/xvpn/main/install-onl
 
 ```bash
 apt update && apt install -y curl ca-certificates && \
-bash <(curl -fsSL https://raw.githubusercontent.com/kkx999/xvpn/main/install-online.sh) --version v1.0.0
+bash <(curl -fsSL https://raw.githubusercontent.com/kkx999/xvpn/main/install-online.sh) --version v1.2.0
 ```
 
 或安装后：
 
 ```bash
-vpn update v1.0.0
+xvpn update v1.2.0
 ```
 
 ## 管理命令
 
-| 命令 | 作用 |
-|---|---|
-| `vpn` | 打开中文管理菜单 |
-| `vpn check` | 检查 GitHub 是否有新版本 |
-| `vpn update` | 更新到最新版本 |
-| `vpn update v1.0.0` | 安装 / 更新到指定版本 |
-| `vpn domain` | 配置或更换域名并管理 HTTPS |
-| `vpn status` | 查看 Panel 服务状态 |
-| `vpn restart` | 重启 Panel 服务 |
-| `vpn logs` | 查看 Panel 实时日志 |
-| `vpn password` | 重置 `admin` 管理员密码 |
+```bash
+xvpn
+xvpn check
+xvpn update
+xvpn domain
+xvpn status
+xvpn restart
+xvpn logs
+xvpn password
+xvpn version
+```
 
 Android 接口见 `APP_API.md` / `APP_API_OPENAPI.yaml`，GitHub 更新说明见 `GITHUB_UPDATE.md`。
