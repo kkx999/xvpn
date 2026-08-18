@@ -1,0 +1,168 @@
+{% extends 'base.html' %}
+{% block heading %}系统设置{% endblock %}
+{% block subheading %}面板参数、安全、API、自动备份与 Telegram 集中管理{% endblock %}
+{% block content %}
+<div class="settings-grid">
+  <section class="panel-card settings-card" id="system-section">
+    <div class="card-head">
+      <div><h2>基础设置</h2><p>修改后立即生效，不需要 SSH 编辑配置。</p></div>
+      <span class="badge blue">{{ panel_version }}</span>
+    </div>
+    <form method="post" action="{{ url_for('admin.settings_system') }}" class="form-grid">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label>面板名称
+        <input name="panel_name" maxlength="40" value="{{ settings_values.panel_name }}" required>
+      </label>
+      <label>副标题
+        <input name="panel_subtitle" maxlength="80" value="{{ settings_values.panel_subtitle }}" placeholder="私人访问控制台">
+      </label>
+      <label class="setting-control-card">
+        <span class="setting-control-title">App 登录有效期（天）</span>
+        <input name="token_days" type="number" min="1" max="3650" value="{{ settings_values.token_days }}" required>
+        <small class="help-text">例如填写 30：新签发的登录 Token 有效 30 天，到期后用户需要重新登录；修改这里不会改变已经签发 Token 的过期时间。</small>
+      </label>
+      <div class="setting-control-card switch-control-card">
+        <span class="setting-control-title">邀请注册</span>
+        <div class="switch-control-main">
+          <div><strong>允许邀请码注册</strong><small>关闭后 App 仍可正常登录，但不能创建新账号。</small></div>
+          <label class="ios-switch" aria-label="允许邀请码注册">
+            <input type="hidden" name="registration_enabled" value="0">
+            <input class="switch-input" type="checkbox" name="registration_enabled" value="1" {% if settings_values.registration_enabled == '1' %}checked{% endif %}>
+            <span class="switch-track"><span class="switch-thumb"></span></span>
+          </label>
+        </div>
+      </div>
+      <div class="span-2 form-actions"><button class="primary-btn" type="submit">保存基础设置</button></div>
+    </form>
+    <div class="system-meta">
+      <span><small>当前域名</small><strong>{{ system_info.host }}</strong></span>
+      <span><small>HTTPS</small><strong>{{ '已启用' if system_info.https else '未启用' }}</strong></span>
+      <span><small>数据库</small><strong>{{ (system_info.database_size / 1024)|round(1) }} KB</strong></span>
+    </div>
+  </section>
+
+  <section class="panel-card settings-card">
+    <div class="card-head"><div><h2>管理员账户</h2><p>管理员用户名固定为 admin。</p></div><span class="badge green">admin</span></div>
+    <form method="post" action="{{ url_for('admin.admin_password') }}" class="form-grid">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label class="span-2">当前密码<input type="password" name="current_password" autocomplete="current-password" required></label>
+      <label>新密码<input type="password" name="new_password" minlength="8" autocomplete="new-password" required></label>
+      <label>确认新密码<input type="password" name="confirm_password" minlength="8" autocomplete="new-password" required></label>
+      <div class="span-2 form-actions"><button class="secondary-btn" type="reset">清空</button><button class="primary-btn" type="submit">修改管理员密码</button></div>
+    </form>
+    <div class="info-note">修改成功后，其他已登录的后台会话会自动失效。</div>
+  </section>
+</div>
+
+<section class="panel-card backup-section" id="backup-section">
+  <div class="card-head">
+    <div><h2>备份与恢复</h2><p>手动下载、上传恢复、自动备份和 Telegram 异地备份都在这里完成。</p></div>
+    <span class="badge green">可跨服务器恢复</span>
+  </div>
+
+  <div class="backup-quick-actions">
+    <form method="post" action="{{ url_for('admin.backup_download_new') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button class="primary-btn icon-btn" type="submit"><span>↓</span> 下载备份</button>
+    </form>
+    <form method="post" action="{{ url_for('admin.backup_upload_restore') }}" enctype="multipart/form-data" class="upload-restore-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label class="file-picker"><input type="file" name="backup_file" accept=".zip,application/zip" required><span>选择备份 ZIP</span></label>
+      <button class="action-btn warning" data-confirm="恢复会用备份中的数据覆盖当前 Panel。系统会先自动创建一份恢复前备份。" data-confirm-title="上传并恢复备份？" data-confirm-button="确认恢复" type="submit">上传并恢复</button>
+    </form>
+  </div>
+  <div class="backup-warning">新版备份 ZIP 已包含跨服务器恢复节点加密配置所需的恢复信息，因此<strong>备份文件本身属于敏感文件</strong>，请像管理员密码一样妥善保管。</div>
+
+  <div class="backup-config-grid">
+    <form method="post" action="{{ url_for('admin.backup_automation_settings') }}" class="backup-config-card form-grid" id="backup-config-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="backup_timezone" id="backup-timezone" value="{{ settings_values.backup_timezone }}">
+      <div class="span-2 switch-setting">
+        <div><strong>自动备份</strong><small>关闭时不会执行计划任务，手动备份仍可正常使用。</small></div>
+        <label class="ios-switch"><input class="switch-input" type="checkbox" name="auto_backup_enabled" value="1" {% if settings_values.auto_backup_enabled == '1' %}checked{% endif %}><span class="switch-track"><span class="switch-thumb"></span></span></label>
+      </div>
+      <label>备份周期
+        <select name="backup_interval">
+          <option value="6h" {% if settings_values.backup_interval=='6h' %}selected{% endif %}>每 6 小时</option>
+          <option value="12h" {% if settings_values.backup_interval=='12h' %}selected{% endif %}>每 12 小时</option>
+          <option value="daily" {% if settings_values.backup_interval=='daily' %}selected{% endif %}>每天</option>
+          <option value="3d" {% if settings_values.backup_interval=='3d' %}selected{% endif %}>每 3 天</option>
+          <option value="weekly" {% if settings_values.backup_interval=='weekly' %}selected{% endif %}>每周</option>
+        </select>
+      </label>
+      <label>执行时间
+        <input type="time" name="backup_time" value="{{ settings_values.backup_time }}">
+        <small class="help-text">每天 / 每 3 天 / 每周使用此时间；6/12 小时按上次备份间隔执行。</small>
+      </label>
+      <label>本地保留
+        <select name="backup_keep">
+          {% for n in [3,7,14,30,60] %}<option value="{{ n }}" {% if settings_values.backup_keep|int==n %}selected{% endif %}>最近 {{ n }} 份自动备份</option>{% endfor %}
+        </select>
+        <small class="help-text">只自动清理“自动备份”，手动备份不会被轮换删除。</small>
+      </label>
+      <label>执行时区
+        <input id="backup-timezone-display" value="{{ settings_values.backup_timezone }}" readonly>
+        <small class="help-text">保存时自动使用当前浏览器时区。</small>
+      </label>
+
+      <div class="span-2 section-divider"></div>
+      <div class="span-2 switch-setting">
+        <div><strong>Telegram 自动发送</strong><small>每次自动备份成功后，把 ZIP 直接发送到指定聊天。</small></div>
+        <label class="ios-switch"><input class="switch-input" type="checkbox" name="telegram_enabled" value="1" {% if settings_values.telegram_enabled == '1' %}checked{% endif %}><span class="switch-track"><span class="switch-thumb"></span></span></label>
+      </div>
+      <label>Bot Token
+        <input type="password" name="telegram_bot_token" autocomplete="off" placeholder="{{ '已保存；留空保持不变' if telegram_configured else '从 BotFather 获取' }}">
+        <small class="help-text">保存后加密存储，页面不会重新显示完整 Token。</small>
+      </label>
+      <label>Chat ID
+        <input name="telegram_chat_id" value="{{ settings_values.telegram_chat_id }}" placeholder="例如：123456789 或 -100...">
+      </label>
+      <div class="span-2 backup-form-actions">
+        <button class="secondary-btn" type="submit" formaction="{{ url_for('admin.telegram_test') }}">测试 Telegram</button>
+        <button class="primary-btn" type="submit">保存自动备份设置</button>
+      </div>
+    </form>
+    {% if telegram_configured %}
+    <form method="post" action="{{ url_for('admin.telegram_clear') }}" class="telegram-clear-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button class="action-btn danger" data-confirm="将删除服务器中已保存的 Bot Token 和 Chat ID，并关闭 Telegram 自动发送。" data-confirm-title="清除 Telegram 配置？" type="submit">清除 Telegram 配置</button>
+    </form>
+    {% endif %}
+
+    <div class="backup-status-card">
+      <h3>运行状态</h3>
+      <div class="status-line"><span>自动备份</span><strong>{{ '已开启' if settings_values.auto_backup_enabled=='1' else '已关闭' }}</strong></div>
+      <div class="status-line"><span>Telegram</span><strong>{{ '已开启' if settings_values.telegram_enabled=='1' else '已关闭' }}</strong></div>
+      <div class="status-block"><small>上次自动备份</small><p>{{ settings_values.backup_last_status or '尚未执行' }}</p><em>{{ (settings_values.backup_last_run_at or '—')[:19].replace('T',' ') }}</em></div>
+      <div class="status-block"><small>上次 Telegram</small><p>{{ settings_values.telegram_last_status or '尚未发送' }}</p></div>
+      <div class="info-note">自动任务由 systemd timer 在后台执行，即使你没有打开网页也会运行。</div>
+    </div>
+  </div>
+
+  <div class="card-head backup-list-head"><div><h3>备份记录</h3><p>保留下载、恢复和删除；自动备份按设置数量轮换。</p></div></div>
+  <div class="table-wrap"><table><thead><tr><th>备份文件</th><th>类型</th><th>创建时间</th><th>大小</th><th>操作</th></tr></thead><tbody>
+    {% for b in backups %}<tr>
+      <td><code>{{ b.name }}</code></td>
+      <td><span class="badge {{ 'blue' if b.kind=='auto' else ('green' if b.kind=='manual' else 'gray') }}">{{ '自动' if b.kind=='auto' else ('手动' if b.kind=='manual' else ('恢复前' if b.kind=='pre-restore' else '其他')) }}</span></td>
+      <td>{{ b.created_at[:16].replace('T',' ') }}</td><td>{{ (b.size / 1024)|round(1) }} KB</td>
+      <td class="actions">
+        <a class="action-btn edit" href="{{ url_for('admin.backup_download', name=b.name) }}">下载</a>
+        <form method="post" action="{{ url_for('admin.backup_restore', name=b.name) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="action-btn warning" data-confirm="恢复后当前数据库将被此备份替换；系统会先自动保存恢复前数据。" data-confirm-title="恢复这个备份？" type="submit">恢复</button></form>
+        <form method="post" action="{{ url_for('admin.backup_delete', name=b.name) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="action-btn danger" data-confirm="只删除服务器上的这份备份，不影响当前运行数据。" data-confirm-title="删除备份文件？" type="submit">删除</button></form>
+      </td>
+    </tr>{% else %}<tr><td colspan="5" class="empty">暂无备份</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+
+<script>
+(() => {
+  const hidden = document.getElementById('backup-timezone');
+  const display = document.getElementById('backup-timezone-display');
+  try {
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone || hidden?.value || 'UTC';
+    if (hidden) hidden.value = zone;
+    if (display) display.value = zone;
+  } catch (_) {}
+})();
+</script>
+{% endblock %}

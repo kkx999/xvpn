@@ -1,0 +1,34 @@
+{% extends 'base.html' %}
+{% block heading %}用户管理{% endblock %}
+{% block subheading %}管理邀请注册账户、密码与启停状态{% endblock %}
+{% block content %}
+<div class="panel-card">
+  <div class="card-head"><div><h2>全部用户</h2><p>{{ users|length }} 个账户</p></div></div>
+  <div class="table-wrap"><table><thead><tr><th>用户</th><th>状态</th><th>邀请码</th><th>注册</th><th>最后登录</th><th>密码管理</th><th>操作</th></tr></thead><tbody>
+  {% for u in users %}<tr>
+    <td><strong>{{ u.username }}</strong></td>
+    <td><span class="badge {{ 'green' if u.status=='active' else 'gray' }}">{{ '正常' if u.status=='active' else '停用' }}</span></td>
+    <td><code>{{ u.invite_code or '—' }}</code></td>
+    <td>{{ u.created_at[:16].replace('T',' ') }}</td>
+    <td>{{ (u.last_login_at or '—')[:16].replace('T',' ') }}</td>
+    <td>
+      <div class="password-actions">
+        <form method="post" action="{{ url_for('admin.user_password', user_id=u.id) }}" class="inline-reset">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input name="password" type="password" minlength="8" required placeholder="输入新密码">
+          <button class="action-btn edit" data-confirm="设置后旧密码和该用户现有登录状态会立即失效。" data-confirm-title="设置 {{ u.username }} 的新密码？" data-confirm-button="确认设置" type="submit">设置</button>
+        </form>
+        <form method="post" action="{{ url_for('admin.user_password_random', user_id=u.id) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button class="action-btn neutral" data-confirm="系统会生成新的随机密码，并立即撤销该用户现有登录状态。新密码只显示一次。" data-confirm-title="随机重置 {{ u.username }} 的密码？" data-confirm-button="随机重置" type="submit">随机重置</button>
+        </form>
+      </div>
+    </td>
+    <td class="actions">
+      <form method="post" action="{{ url_for('admin.user_toggle', user_id=u.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="action-btn {{ 'warning' if u.status=='active' else 'success' }}" {% if u.status=='active' %}data-confirm="停用后该用户的现有登录状态会立即失效，并无法重新登录。" data-confirm-title="停用 {{ u.username }}？" data-confirm-button="确认停用"{% endif %} type="submit">{{ '停用' if u.status=='active' else '恢复' }}</button></form>
+      <form method="post" action="{{ url_for('admin.user_delete', user_id=u.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="action-btn danger" data-confirm="删除后该账户、登录 Token 等记录会被移除，此操作不可撤销。" data-confirm-title="删除 {{ u.username }}？" data-confirm-button="确认删除" type="submit">删除</button></form>
+    </td>
+  </tr>{% else %}<tr><td colspan="7" class="empty">暂无用户</td></tr>{% endfor %}
+  </tbody></table></div>
+</div>
+{% endblock %}

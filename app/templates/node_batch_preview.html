@@ -1,0 +1,59 @@
+{% extends 'base.html' %}{% block heading %}批量导入预览{% endblock %}{% block subheading %}确认国家、原节点名称与 App 显示名称后再写入数据库{% endblock %}
+{% block content %}
+<div class="panel-card">
+  <div class="card-head">
+    <div><h2>{{ country_flag(country_code) }} {{ country }}</h2><p>已解析 {{ preview|length }} 个节点。原节点名称只做记录，App 显示名称可在这里逐条修改。</p></div>
+    <a class="soft-btn" href="{{ url_for('admin.nodes') }}">返回重新导入</a>
+  </div>
+  <form method="post" action="{{ url_for('admin.node_batch_confirm') }}" id="batch-confirm-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="country_code" value="{{ country_code }}">
+    <div class="table-wrap">
+      <table class="preview-table">
+        <thead><tr><th>#</th><th>原节点名称</th><th>App 显示名称</th><th>协议详情</th><th>排序</th></tr></thead>
+        <tbody>
+        {% for item in preview %}
+          <tr>
+            <td>{{ loop.index }}</td>
+            <td><strong>{{ item.original_name }}</strong><input type="hidden" name="config" value="{{ item.config }}"></td>
+            <td><input class="table-input" name="display_name" value="{{ item.display_name }}" required></td>
+            <td><div class="protocol-stack">{% for detail in item.protocol_details %}<span class="badge {{ 'blue' if loop.first else 'soft' }}">{{ detail }}</span>{% endfor %}</div></td>
+            <td><input class="table-input small" name="sort_order" type="number" value="{{ item.sort_order }}"></td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="preview-actions">
+      <a class="soft-btn" href="{{ url_for('admin.nodes') }}">取消</a>
+      <button class="primary-btn" type="submit">确认导入 {{ preview|length }} 个节点</button>
+    </div>
+  </form>
+</div>
+<script>
+(() => {
+  const form = document.getElementById('batch-confirm-form');
+  const selected = {{ country_code|tojson }};
+  const countryNames = {{ country_map|tojson }};
+  form?.addEventListener('submit', async (event) => {
+    if (form.dataset.webConfirmed === '1') { delete form.dataset.webConfirmed; return; }
+    const mismatches = [];
+    form.querySelectorAll('input[name="display_name"]').forEach((input) => {
+      const value = (input.value || '').trim();
+      const hit = Object.entries(countryNames).find(([code, label]) => code !== selected && label !== '其他' && value.includes(label));
+      if (hit) mismatches.push(`${value} → 名称像“${hit[1]}”`);
+    });
+    if (!mismatches.length) return;
+    event.preventDefault();
+    const preview = mismatches.slice(0, 3).join('\n');
+    const more = mismatches.length > 3 ? `\n另有 ${mismatches.length - 3} 条` : '';
+    const ok = await window.webConfirm({
+      titleText: '国家分类可能不一致',
+      messageText: `当前国家分类是“${countryNames[selected] || selected}”，但检测到：\n\n${preview}${more}\n\n这只是防手滑提醒，仍然可以继续导入。`,
+      buttonText: '仍然导入'
+    });
+    if (ok) { form.dataset.webConfirmed = '1'; form.requestSubmit(); }
+  });
+})();
+</script>
+{% endblock %}

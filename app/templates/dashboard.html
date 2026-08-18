@@ -1,0 +1,10 @@
+{% extends 'base.html' %}{% block heading %}概览{% endblock %}{% block subheading %}快速查看账户、节点与邀请码状态{% endblock %}
+{% block content %}
+<div class="stat-grid">
+  <div class="stat-card"><span>用户总数</span><strong>{{ stats.users }}</strong><small>{{ stats.active_users }} 个正常</small></div>
+  <div class="stat-card"><span>节点总数</span><strong>{{ stats.nodes }}</strong><small>{{ stats.enabled_nodes }} 个已启用</small></div>
+  <div class="stat-card"><span>可用邀请码</span><strong>{{ stats.invites }}</strong><small>剩余 {{ stats.invite_slots }} 次注册名额</small></div>
+</div>
+<div class="panel-card"><div class="card-head"><div><h2>最近注册</h2><p>最新 6 个账户</p></div><a class="soft-btn" href="{{ url_for('admin.users') }}">查看全部</a></div>
+<div class="table-wrap"><table><thead><tr><th>用户名</th><th>状态</th><th>注册时间</th><th>最后登录</th></tr></thead><tbody>{% for u in recent_users %}<tr><td><strong>{{ u.username }}</strong></td><td><span class="badge {{ 'green' if u.status=='active' else 'gray' }}">{{ '正常' if u.status=='active' else '停用' }}</span></td><td>{{ u.created_at[:16].replace('T',' ') }}</td><td>{{ (u.last_login_at or '—')[:16].replace('T',' ') }}</td></tr>{% else %}<tr><td colspan="4" class="empty">暂无用户</td></tr>{% endfor %}</tbody></table></div></div>
+{% endblock %}

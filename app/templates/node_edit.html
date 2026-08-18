@@ -1,0 +1,37 @@
+{% extends 'base.html' %}{% block heading %}编辑节点{% endblock %}{% block subheading %}原节点名称保留，App 名称和国家分类由你控制{% endblock %}
+{% block content %}
+<div class="panel-card narrow">
+  <form method="post" action="{{ url_for('admin.node_edit', node_id=node.id) }}" class="form-grid">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    {% if return_to %}<input type="hidden" name="return_to" value="{{ return_to }}">{% endif %}
+    <label>App 显示名称
+      <input name="name" value="{{ node.name }}" required>
+      <small class="help-text">Android App 只显示这个名称。</small>
+    </label>
+    <label>原节点名称
+      <input value="{{ node.original_name }}" readonly>
+      <small class="help-text">自动从原始配置识别，不会被 App 重命名覆盖。</small>
+    </label>
+    <label>国家/地区
+      <select name="country_code" required>
+        {% if node.country_code not in country_map %}<option value="{{ node.country_code }}" selected>{{ country_flag(node.country_code) }} {{ node.country }}</option>{% endif %}
+        {% for code, name in countries %}<option value="{{ code }}" {% if node.country_code==code %}selected{% endif %}>{{ country_flag(code) }} {{ name }}</option>{% endfor %}
+      </select>
+      <small class="help-text">国旗、国家名称与国家代码自动对应。</small>
+    </label>
+    <label>协议
+      <input value="{{ node.protocol|upper }}" readonly>
+      <small class="help-text">根据节点配置自动识别。</small>
+    </label>
+    <label>排序
+      <input name="sort_order" type="number" value="{{ node.sort_order }}">
+    </label>
+    <div></div>
+    <label class="span-2">完整节点配置
+      <textarea name="config" rows="8" required>{{ node.config }}</textarea>
+      <small class="help-text">修改配置后，保存时会重新识别原节点名称和协议。</small>
+    </label>
+    <div class="span-2 form-actions"><a class="soft-btn" href="{{ url_for('admin.node_overview') if return_to=='overview' else url_for('admin.nodes') }}">返回</a><button class="primary-btn" type="submit">保存修改</button></div>
+  </form>
+</div>
+{% endblock %}

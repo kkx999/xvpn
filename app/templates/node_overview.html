@@ -1,0 +1,148 @@
+{% extends 'base.html' %}{% block heading %}节点一览{% endblock %}{% block subheading %}集中查看全部节点、国家分类、协议组合与启停状态{% endblock %}
+{% block content %}
+<div class="stat-grid node-stat-grid">
+  <div class="stat-card"><span>节点总数</span><strong>{{ nodes|length }}</strong><small>后台已保存节点</small></div>
+  <div class="stat-card"><span>已启用</span><strong>{{ enabled_count }}</strong><small>会下发给正常 App 用户</small></div>
+  <div class="stat-card"><span>国家/地区</span><strong>{{ country_count }}</strong><small>按国家代码自动分组</small></div>
+</div>
+
+<div class="panel-card country-order-card">
+  <div class="card-head overview-head">
+    <div>
+      <h2>国家分类排序</h2>
+      <p>拖拽国家卡片调整 App 一级分类顺序；国家内部继续按每个节点的排序值排列。</p>
+    </div>
+  </div>
+  {% if country_orders %}
+  <form method="post" action="{{ url_for('admin.country_order_update') }}" id="country-order-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="country-sort-list" id="country-sort-list">
+      {% for c in country_orders %}
+      <div class="country-sort-item" draggable="true" data-country-code="{{ c.country_code }}">
+        <input type="hidden" name="country_code" value="{{ c.country_code }}">
+        <button class="drag-handle" type="button" title="拖拽排序" aria-label="拖拽 {{ c.country }}">⋮⋮</button>
+        <span class="country-order-number">{{ loop.index }}</span>
+        <div class="country-sort-main">
+          <strong>{{ country_flag(c.country_code) }} {{ c.country }}</strong>
+          <small>{{ c.enabled_count }} 个启用 · 共 {{ c.node_count }} 个节点</small>
+        </div>
+        <div class="country-sort-actions">
+          <button class="country-move-btn" type="button" data-move="up" title="上移">↑</button>
+          <button class="country-move-btn" type="button" data-move="down" title="下移">↓</button>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    <div class="country-order-footer">
+      <span class="help-text">没有节点的国家不会出现在 App；以后首次导入新国家时会自动追加到最后。</span>
+      <button class="primary-btn" type="submit">保存国家排序</button>
+    </div>
+  </form>
+  {% else %}
+  <div class="empty">暂无国家分类，导入节点后会自动出现</div>
+  {% endif %}
+</div>
+
+<div class="panel-card">
+  <div class="card-head overview-head">
+    <div><h2>全部节点</h2><p>协议详情会自动识别 REALITY、Vision、TCP / WS / gRPC 等常见组合。</p></div>
+    <a class="primary-link-btn" href="{{ url_for('admin.nodes') }}">节点管理 / 导入</a>
+  </div>
+
+  <div class="node-filter-bar">
+    <label>搜索
+      <input id="node-search" placeholder="App 名称 / 原节点名称">
+    </label>
+    <label>国家
+      <select id="country-filter"><option value="">全部国家</option>{% for code, name in countries %}<option value="{{ code }}">{{ country_flag(code) }} {{ name }}</option>{% endfor %}</select>
+    </label>
+    <label>协议
+      <select id="protocol-filter"><option value="">全部协议</option>{% for protocol in protocols %}<option value="{{ protocol }}">{{ protocol|upper }}</option>{% endfor %}</select>
+    </label>
+    <label>状态
+      <select id="status-filter"><option value="">全部状态</option><option value="enabled">启用</option><option value="disabled">停用</option></select>
+    </label>
+  </div>
+
+  <div class="table-wrap"><table id="node-overview-table"><thead><tr><th>App 显示名称</th><th>原节点名称</th><th>国家</th><th>协议详情</th><th>排序</th><th>状态</th><th>操作</th></tr></thead><tbody>
+  {% for n in nodes %}
+    <tr data-country="{{ n.country_code }}" data-protocol="{{ n.protocol }}" data-status="{{ n.status }}" data-search="{{ (n.name ~ ' ' ~ n.original_name)|lower }}">
+      <td><strong>{{ n.name }}</strong></td>
+      <td><span class="original-name" title="{{ n.original_name }}">{{ n.original_name or '—' }}</span></td>
+      <td><span class="country-chip">{{ country_flag(n.country_code) }} {{ n.country }}</span></td>
+      <td><div class="protocol-stack">{% for detail in n.protocol_details %}<span class="badge {{ 'blue' if loop.first else 'soft' }}">{{ detail }}</span>{% endfor %}</div></td>
+      <td>{{ n.sort_order }}</td>
+      <td><span class="badge {{ 'green' if n.status=='enabled' else 'gray' }}">{{ '启用' if n.status=='enabled' else '停用' }}</span></td>
+      <td class="actions">
+        <a class="action-btn edit" href="{{ url_for('admin.node_edit_page', node_id=n.id, return_to='overview') }}">编辑</a>
+        <form method="post" action="{{ url_for('admin.node_toggle', node_id=n.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="return_to" value="overview"><button class="action-btn {{ 'warning' if n.status=='enabled' else 'success' }}" {% if n.status=='enabled' %}data-confirm="停用后 App 下一次刷新节点列表时会立即隐藏这个节点。" data-confirm-title="停用 {{ n.name }}？" data-confirm-button="确认停用"{% endif %} type="submit">{{ '停用' if n.status=='enabled' else '启用' }}</button></form>
+        <form method="post" action="{{ url_for('admin.node_delete', node_id=n.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="return_to" value="overview"><button class="action-btn danger" data-confirm="删除后此节点会立即从 App API 中消失，且无法从面板恢复。" data-confirm-title="删除 {{ n.name }}？" data-confirm-button="确认删除" type="submit">删除</button></form>
+      </td>
+    </tr>
+  {% else %}<tr><td colspan="7" class="empty">暂无节点</td></tr>{% endfor %}
+  </tbody></table></div>
+  <div id="filter-empty" class="empty hidden-field">没有符合筛选条件的节点</div>
+</div>
+<script>
+(() => {
+  const list = document.getElementById('country-sort-list');
+  if (list) {
+    let dragging = null;
+    const refreshNumbers = () => {
+      [...list.querySelectorAll('.country-sort-item')].forEach((item, idx) => {
+        const number = item.querySelector('.country-order-number');
+        if (number) number.textContent = String(idx + 1);
+      });
+    };
+    list.querySelectorAll('.country-sort-item').forEach(item => {
+      item.addEventListener('dragstart', () => { dragging = item; item.classList.add('dragging'); });
+      item.addEventListener('dragend', () => { item.classList.remove('dragging'); dragging = null; refreshNumbers(); });
+      item.addEventListener('dragover', e => {
+        e.preventDefault();
+        if (!dragging || dragging === item) return;
+        const items = [...list.querySelectorAll('.country-sort-item')];
+        const from = items.indexOf(dragging);
+        const to = items.indexOf(item);
+        list.insertBefore(dragging, from < to ? item.nextSibling : item);
+      });
+    });
+    list.addEventListener('click', e => {
+      const btn = e.target.closest('[data-move]');
+      if (!btn) return;
+      const item = btn.closest('.country-sort-item');
+      if (!item) return;
+      if (btn.dataset.move === 'up' && item.previousElementSibling) {
+        list.insertBefore(item, item.previousElementSibling);
+      } else if (btn.dataset.move === 'down' && item.nextElementSibling) {
+        list.insertBefore(item.nextElementSibling, item);
+      }
+      refreshNumbers();
+    });
+    refreshNumbers();
+  }
+})();
+
+(() => {
+  const search = document.getElementById('node-search');
+  const country = document.getElementById('country-filter');
+  const protocol = document.getElementById('protocol-filter');
+  const status = document.getElementById('status-filter');
+  const rows = [...document.querySelectorAll('#node-overview-table tbody tr[data-country]')];
+  const empty = document.getElementById('filter-empty');
+  function apply() {
+    const q = (search?.value || '').trim().toLowerCase();
+    let visible = 0;
+    rows.forEach(row => {
+      const ok = (!q || row.dataset.search.includes(q)) &&
+        (!country?.value || row.dataset.country === country.value) &&
+        (!protocol?.value || row.dataset.protocol === protocol.value) &&
+        (!status?.value || row.dataset.status === status.value);
+      row.style.display = ok ? '' : 'none';
+      if (ok) visible++;
+    });
+    empty?.classList.toggle('hidden-field', visible !== 0 || rows.length === 0);
+  }
+  [search, country, protocol, status].forEach(el => el?.addEventListener(el?.tagName === 'INPUT' ? 'input' : 'change', apply));
+})();
+</script>
+{% endblock %}

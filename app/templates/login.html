@@ -1,0 +1,10 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>登录 · {{ panel_name }}</title><link rel="stylesheet" href="{{ url_for('admin.static', filename='style.css') }}"></head>
+<body class="login-body">
+<div class="login-wrap">
+  <div class="login-brand"><div class="brand-mark large">V</div><h1>{{ panel_name }}</h1><p>{{ panel_subtitle }}</p></div>
+  <div class="login-card">
+    <h2>欢迎回来</h2><p>登录管理员账户</p>
+    {% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}{% for category,msg in messages %}<div class="flash {{ category }}">{{ msg }}</div>{% endfor %}{% endif %}{% endwith %}
+    <form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><label>用户名<input name="username" autocomplete="username" required value="admin" readonly></label><label>密码<input name="password" type="password" autocomplete="current-password" required placeholder="请输入管理员密码"></label><button class="primary-btn wide" type="submit">立即登录</button></form>
+  </div>
+</div></body></html>
