@@ -4,14 +4,14 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <title>{% block title %}{{ panel_name }}{% endblock %}</title>
   <script>
-    (()=>{const saved=localStorage.getItem('vpn-panel-theme');const dark=saved?saved==='dark':window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches;document.documentElement.dataset.theme=dark?'dark':'light';})();
+    (()=>{const saved=localStorage.getItem('xvpn-panel-theme')||localStorage.getItem('vpn-panel-theme');const dark=saved?saved==='dark':window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches;document.documentElement.dataset.theme=dark?'dark':'light';})();
   </script>
   <link rel="stylesheet" href="{{ url_for('admin.static', filename='style.css') }}?v={{ panel_version }}">
 </head>
 <body>
 <div class="app-shell">
   <aside class="sidebar">
-    <div class="brand"><div class="brand-mark">V</div><div><strong>{{ panel_name }}</strong><small>{{ panel_subtitle }}</small></div></div>
+    <div class="brand"><div class="brand-mark">X</div><div><strong>{{ panel_name }}</strong><small>{{ panel_subtitle }}</small></div></div>
     <nav>
       <a class="nav-item {% if request.endpoint=='admin.dashboard' %}active{% endif %}" href="{{ url_for('admin.dashboard') }}">概览</a>
       <a class="nav-item {% if request.endpoint=='admin.node_overview' %}active{% endif %}" href="{{ url_for('admin.node_overview') }}">节点一览</a>
@@ -68,7 +68,7 @@
   const text = btn?.querySelector('.theme-text');
   const icon = btn?.querySelector('.theme-icon');
   const syncThemeControl = theme => { if(text) text.textContent = theme === 'dark' ? '亮色' : '暗色'; if(icon) icon.textContent = theme === 'dark' ? '☀' : '☾'; };
-  const apply = theme => { root.dataset.theme = theme; localStorage.setItem('vpn-panel-theme', theme); syncThemeControl(theme); };
+  const apply = theme => { root.dataset.theme = theme; localStorage.setItem('xvpn-panel-theme', theme); syncThemeControl(theme); };
   syncThemeControl(root.dataset.theme);
   btn?.addEventListener('click', () => apply(root.dataset.theme === 'dark' ? 'light' : 'dark'));
 
@@ -99,7 +99,7 @@
   document.querySelectorAll('[data-confirm]').forEach(el => el.addEventListener('click', async e => {
     e.preventDefault();
     const target = el.closest('form') || el;
-    if (target.tagName === 'FORM' && !target.checkValidity()) { target.reportValidity(); return; }
+    if (target.tagName === 'FORM' && !el.formNoValidate && !target.checkValidity()) { target.reportValidity(); return; }
     const danger = el.classList.contains('danger') || el.dataset.confirmTone === 'danger';
     const warning = el.classList.contains('warning') || el.dataset.confirmTone === 'warning';
     const ok = await openConfirm({
@@ -109,11 +109,27 @@
       buttonText: el.dataset.confirmButton || '确认'
     });
     if (!ok) return;
-    if (target.tagName === 'FORM') target.submit(); else if (target.href) location.href = target.href;
+    if (target.tagName === 'FORM') { if (typeof target.requestSubmit === 'function') target.requestSubmit(el); else target.submit(); } else if (target.href) location.href = target.href;
   }));
   document.querySelectorAll('[data-modal-cancel]').forEach(el => el.addEventListener('click', () => closeModal(false)));
   confirmBtn?.addEventListener('click', () => closeModal(true));
   document.addEventListener('keydown', e => { if(e.key === 'Escape' && modal?.classList.contains('open')) closeModal(false); });
+
+  document.querySelectorAll('form').forEach(form => form.addEventListener('submit', e => {
+    if (form.dataset.submitting === '1') { e.preventDefault(); return; }
+    form.dataset.submitting = '1';
+    const submitter = e.submitter || form.querySelector('button[type="submit"],input[type="submit"]');
+    // Delay disabling until the browser has captured the submitter, so formaction/name
+    // semantics are preserved while duplicate clicks are still blocked immediately.
+    setTimeout(() => {
+      form.querySelectorAll('button[type="submit"],input[type="submit"]').forEach(control => { control.disabled = true; });
+      if (submitter) {
+        const loading = submitter.dataset?.loadingText || '处理中...';
+        if (submitter.tagName === 'INPUT') submitter.value = loading; else submitter.textContent = loading;
+        submitter.setAttribute('aria-busy','true');
+      }
+    }, 0);
+  }));
 
   document.querySelectorAll('[data-secret-close]').forEach(el => el.addEventListener('click', () => document.getElementById('secret-modal')?.classList.remove('open')));
   document.querySelectorAll('[data-copy-target]').forEach(btn => btn.addEventListener('click', async () => {

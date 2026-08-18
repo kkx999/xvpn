@@ -72,9 +72,70 @@ CREATE TABLE IF NOT EXISTS api_tokens (
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS admin_api_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    admin_id INTEGER NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    last_used_at TEXT,
+    FOREIGN KEY(admin_id) REFERENCES admins(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS traffic_device_counters (
+    user_id INTEGER NOT NULL,
+    device_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    node_id INTEGER NOT NULL DEFAULT 0,
+    upload_total_bytes INTEGER NOT NULL DEFAULT 0 CHECK(upload_total_bytes >= 0),
+    download_total_bytes INTEGER NOT NULL DEFAULT 0 CHECK(download_total_bytes >= 0),
+    app_version TEXT NOT NULL DEFAULT '',
+    last_report_at TEXT NOT NULL,
+    PRIMARY KEY(user_id, device_id),
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS traffic_daily (
+    user_id INTEGER NOT NULL,
+    day TEXT NOT NULL,
+    upload_bytes INTEGER NOT NULL DEFAULT 0 CHECK(upload_bytes >= 0),
+    download_bytes INTEGER NOT NULL DEFAULT 0 CHECK(download_bytes >= 0),
+    report_count INTEGER NOT NULL DEFAULT 0 CHECK(report_count >= 0),
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(user_id, day),
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS traffic_node_daily (
+    user_id INTEGER NOT NULL,
+    node_id INTEGER NOT NULL,
+    day TEXT NOT NULL,
+    node_name TEXT NOT NULL DEFAULT '',
+    country TEXT NOT NULL DEFAULT '',
+    region TEXT NOT NULL DEFAULT '',
+    upload_bytes INTEGER NOT NULL DEFAULT 0 CHECK(upload_bytes >= 0),
+    download_bytes INTEGER NOT NULL DEFAULT 0 CHECK(download_bytes >= 0),
+    report_count INTEGER NOT NULL DEFAULT 0 CHECK(report_count >= 0),
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(user_id, node_id, day),
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS system_event_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    category TEXT NOT NULL,
+    level TEXT NOT NULL DEFAULT 'info',
+    message TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_nodes_status_sort ON nodes(status, country_code, sort_order, id);
 CREATE INDEX IF NOT EXISTS idx_country_orders_sort ON country_orders(sort_order, country_code);
 CREATE INDEX IF NOT EXISTS idx_tokens_user ON api_tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_traffic_daily_day ON traffic_daily(day, user_id);
+CREATE INDEX IF NOT EXISTS idx_traffic_counters_report ON traffic_device_counters(last_report_at);
+CREATE INDEX IF NOT EXISTS idx_traffic_node_daily_day ON traffic_node_daily(day, node_id, user_id);
+CREATE INDEX IF NOT EXISTS idx_system_event_logs_created ON system_event_logs(created_at, id);
 
 CREATE TABLE IF NOT EXISTS system_settings (
     key TEXT PRIMARY KEY,
@@ -124,16 +185,12 @@ def _columns(conn, table):
 
 
 def _migrate(conn):
-    """Small additive migrations so dev1 databases can be upgraded in place."""
+    """Small additive migrations so legacy databases can be upgraded in place."""
     admin_cols = _columns(conn, "admins")
     if "updated_at" not in admin_cols:
         conn.execute("ALTER TABLE admins ADD COLUMN updated_at TEXT")
     if "session_version" not in admin_cols:
         conn.execute("ALTER TABLE admins ADD COLUMN session_version INTEGER NOT NULL DEFAULT 1")
-    admin_count = conn.execute("SELECT COUNT(*) FROM admins").fetchone()[0]
-    if admin_count == 1:
-        conn.execute("UPDATE admins SET username='admin'")
-
     user_cols = _columns(conn, "users")
     if "password_changed_at" not in user_cols:
         conn.execute("ALTER TABLE users ADD COLUMN password_changed_at TEXT")
@@ -143,7 +200,7 @@ def _migrate(conn):
         conn.execute("ALTER TABLE invites ADD COLUMN max_uses INTEGER NOT NULL DEFAULT 1")
     if "use_count" not in invite_cols:
         conn.execute("ALTER TABLE invites ADD COLUMN use_count INTEGER NOT NULL DEFAULT 0")
-    # Existing dev1/dev2 invitations were single-use. Preserve their consumed state.
+    # Existing legacy invitations were single-use. Preserve their consumed state.
     conn.execute("UPDATE invites SET max_uses=1 WHERE max_uses IS NULL OR max_uses < 1")
     conn.execute("UPDATE invites SET use_count=1 WHERE status='used' AND use_count < 1")
     conn.execute("UPDATE invites SET use_count=0 WHERE use_count IS NULL OR use_count < 0")
@@ -154,7 +211,7 @@ def _migrate(conn):
         conn.execute("ALTER TABLE nodes ADD COLUMN original_name TEXT NOT NULL DEFAULT ''")
         conn.execute("UPDATE nodes SET original_name=name WHERE original_name='' OR original_name IS NULL")
 
-    # dev6: persistent first-level country/category ordering. Existing installs keep
+    # Persistent first-level country/category ordering. Existing installs keep
     # their previous country-code order on the first migration, avoiding a visual
     # reshuffle during upgrade. New countries are appended automatically.
     conn.execute(
@@ -187,7 +244,7 @@ def _migrate(conn):
            )"""
     )
     defaults = {
-        "panel_name": "VPN Panel",
+        "panel_name": "XVPN Panel",
         "panel_subtitle": "私人访问控制台",
         "token_days": "30",
         "registration_enabled": "1",
@@ -196,6 +253,7 @@ def _migrate(conn):
         "backup_time": "04:00",
         "backup_keep": "7",
         "backup_timezone": "UTC",
+        "panel_timezone": "UTC",
         "telegram_enabled": "0",
         "telegram_chat_id": "",
         "telegram_bot_token_enc": "",
@@ -203,16 +261,26 @@ def _migrate(conn):
         "backup_last_status": "尚未执行自动备份",
         "telegram_last_status": "尚未发送",
     }
+    had_panel_timezone = conn.execute("SELECT 1 FROM system_settings WHERE key='panel_timezone'").fetchone() is not None
     for key, value in defaults.items():
         conn.execute(
             "INSERT OR IGNORE INTO system_settings(key,value,updated_at) VALUES(?,?,?)",
             (key, value, utcnow()),
         )
+    # Upgraded installations already used backup_timezone as their visible local timezone.
+    # Adopt it once as the unified Panel timezone instead of silently reverting to UTC.
+    if not had_panel_timezone:
+        legacy_tz = conn.execute("SELECT value FROM system_settings WHERE key='backup_timezone'").fetchone()
+        if legacy_tz and legacy_tz[0]:
+            conn.execute(
+                "UPDATE system_settings SET value=?,updated_at=? WHERE key='panel_timezone'",
+                (legacy_tz[0], utcnow()),
+            )
     # v1.0.0 removes the unused service API Key feature.
     # Drop legacy objects when upgrading so no stale API-key credentials remain.
     conn.execute("DROP INDEX IF EXISTS idx_api_keys_status")
     conn.execute("DROP TABLE IF EXISTS api_keys")
-    # dev8: lightweight API brute-force protection state.
+    # Lightweight API brute-force protection state.
     conn.execute(
         """CREATE TABLE IF NOT EXISTS auth_rate_limits (
                rate_key TEXT PRIMARY KEY,
@@ -221,6 +289,68 @@ def _migrate(conn):
                blocked_until TEXT
            )"""
     )
+
+    # Android traffic reporting and bounded runtime event history.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS traffic_device_counters (
+               user_id INTEGER NOT NULL,
+               device_id TEXT NOT NULL,
+               session_id TEXT NOT NULL,
+               node_id INTEGER NOT NULL DEFAULT 0,
+               upload_total_bytes INTEGER NOT NULL DEFAULT 0 CHECK(upload_total_bytes >= 0),
+               download_total_bytes INTEGER NOT NULL DEFAULT 0 CHECK(download_total_bytes >= 0),
+               app_version TEXT NOT NULL DEFAULT '',
+               last_report_at TEXT NOT NULL,
+               PRIMARY KEY(user_id, device_id),
+               FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+           )"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS traffic_daily (
+               user_id INTEGER NOT NULL,
+               day TEXT NOT NULL,
+               upload_bytes INTEGER NOT NULL DEFAULT 0 CHECK(upload_bytes >= 0),
+               download_bytes INTEGER NOT NULL DEFAULT 0 CHECK(download_bytes >= 0),
+               report_count INTEGER NOT NULL DEFAULT 0 CHECK(report_count >= 0),
+               updated_at TEXT NOT NULL,
+               PRIMARY KEY(user_id, day),
+               FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+           )"""
+    )
+    # attribute client-reported deltas to the exact node/session.
+    traffic_counter_cols = _columns(conn, "traffic_device_counters")
+    if "node_id" not in traffic_counter_cols:
+        conn.execute("ALTER TABLE traffic_device_counters ADD COLUMN node_id INTEGER NOT NULL DEFAULT 0")
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS traffic_node_daily (
+               user_id INTEGER NOT NULL,
+               node_id INTEGER NOT NULL,
+               day TEXT NOT NULL,
+               node_name TEXT NOT NULL DEFAULT '',
+               country TEXT NOT NULL DEFAULT '',
+               region TEXT NOT NULL DEFAULT '',
+               upload_bytes INTEGER NOT NULL DEFAULT 0 CHECK(upload_bytes >= 0),
+               download_bytes INTEGER NOT NULL DEFAULT 0 CHECK(download_bytes >= 0),
+               report_count INTEGER NOT NULL DEFAULT 0 CHECK(report_count >= 0),
+               updated_at TEXT NOT NULL,
+               PRIMARY KEY(user_id, node_id, day),
+               FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+           )"""
+    )
+
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS system_event_logs (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               category TEXT NOT NULL,
+               level TEXT NOT NULL DEFAULT 'info',
+               message TEXT NOT NULL,
+               created_at TEXT NOT NULL
+           )"""
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_traffic_daily_day ON traffic_daily(day, user_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_traffic_counters_report ON traffic_device_counters(last_report_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_traffic_node_daily_day ON traffic_node_daily(day, node_id, user_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_system_event_logs_created ON system_event_logs(created_at, id)")
 
 
 def init_db(app):
@@ -233,7 +363,7 @@ def init_db(app):
 def bootstrap_admin(app):
     import os
 
-    # Product rule: the administrator account is always named admin on fresh installs.
+    # Fresh installs still start with admin, but the username is editable after login.
     username = "admin"
     password = os.environ.get("ADMIN_PASSWORD", "").strip()
     with connect(app) as conn:

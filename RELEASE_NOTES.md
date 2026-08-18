@@ -55,6 +55,10 @@
 - 运行路径、数据目录、systemd 服务、备份 timer 与 CLI 统一使用 `xvpn-panel` / `xvpn` 命名。
 - 旧 `vpn-panel` 安装升级时继续保留节点、用户、邀请码、管理员账号、数据库、域名、HTTPS、Telegram、备份配置和加密密钥，并迁移到 XVPN 路径。
 - CLI 顶部与更新菜单不再展示仓库名称，只显示产品状态和“检查更新”。
+- 更新链路改为以 **Latest Release 正式资产** 为唯一默认更新源，不再读取 `main/VERSION` 或安装 `main` 分支源码。
+- `xvpn check` 只检查最新正式 Release；检测到新版本时直接提示执行 `xvpn update`。
+- `xvpn update` 会下载正式 ZIP 并强制校验 `SHA256SUMS.txt`；缺少校验文件或校验失败时停止安装。
+- 安装后保留本地更新器，后续更新不依赖 `main` 分支中的应用源码。
 
 ## Android 对接要求
 

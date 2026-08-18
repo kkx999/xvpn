@@ -191,8 +191,9 @@ cp -a "$SCRIPT_DIR/reset-admin-password.py" "$APP_DIR/"
 cp -a "$SCRIPT_DIR/backup-worker.py" "$APP_DIR/"
 cp -a "$SCRIPT_DIR/VERSION" "$APP_DIR/"
 cp -a "$SCRIPT_DIR/xvpn" "$APP_DIR/"
+cp -a "$SCRIPT_DIR/install-online.sh" "$APP_DIR/"
 cp -a "$SCRIPT_DIR/domain-manager.sh" "$APP_DIR/"
-chmod 755 "$APP_DIR/xvpn" "$APP_DIR/domain-manager.sh"
+chmod 755 "$APP_DIR/xvpn" "$APP_DIR/install-online.sh" "$APP_DIR/domain-manager.sh"
 ln -sfn "$APP_DIR/xvpn" /usr/local/bin/xvpn
 rm -f /etc/xvpn-panel-update.conf /etc/vpn-panel-update.conf 2>/dev/null || true
 rm -rf "$APP_DIR/app/__pycache__"
@@ -502,7 +503,7 @@ if [[ "$USE_CF" == "1" && "$HTTPS_OK" == "1" ]]; then
 fi
 echo "========================================"
 echo "管理菜单：xvpn"
-echo "更新：xvpn check 检查新版；xvpn update 部署最新版；xvpn update v版本 安装指定版本"
+echo "更新：xvpn check 检查更新；xvpn update 直接更新到最新正式版；xvpn update v版本 安装或重装指定版本"
 echo "修改管理员密码：登录后台 -> 设置"
 echo "域名 / HTTPS：执行 xvpn -> 域名 / HTTPS 管理"
 echo "忘记管理员密码：执行 xvpn -> 重置管理员密码"

@@ -40,7 +40,7 @@ def test_connection(token=None, chat_id=None):
         bot_name = data.get("result", {}).get("username") or data.get("result", {}).get("first_name") or "Telegram Bot"
         resp = requests.post(
             _api_url(token, "sendMessage"),
-            data={"chat_id": chat_id, "text": "VPN Panel\n\nTelegram 自动备份通知配置成功。"},
+            data={"chat_id": chat_id, "text": "XVPN Panel\n\nTelegram 自动备份通知配置成功。"},
             timeout=15,
         )
         resp.raise_for_status()

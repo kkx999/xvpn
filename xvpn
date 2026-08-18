@@ -3,9 +3,9 @@ set -Eeuo pipefail
 
 APP_DIR="/opt/xvpn-panel"
 NGINX_SITE="/etc/nginx/sites-available/xvpn-panel"
-GITHUB_REPO="kkx999/xvpn"
-GITHUB_BRANCH="main"
-ONLINE_URL="https://raw.githubusercontent.com/kkx999/xvpn/main/install-online.sh"
+RELEASE_REPO="kkx999/xvpn"
+LOCAL_INSTALLER="$APP_DIR/install-online.sh"
+LEGACY_ONLINE_INSTALLER="https://raw.githubusercontent.com/kkx999/xvpn/main/install-online.sh"
 
 C_RESET='\033[0m'; C_BOLD='\033[1m'; C_DIM='\033[2m'; C_BLUE='\033[38;5;75m'; C_GREEN='\033[38;5;78m'; C_YELLOW='\033[38;5;214m'; C_RED='\033[38;5;203m'; C_GRAY='\033[38;5;245m'; C_CYAN='\033[38;5;81m'
 say(){ echo -e "$*"; }; ok(){ say "${C_GREEN}[OK]${C_RESET} $*"; }; info(){ say "${C_BLUE}[INFO]${C_RESET} $*"; }; warn(){ say "${C_YELLOW}[WARN]${C_RESET} $*"; }; err(){ say "${C_RED}[ERROR]${C_RESET} $*" >&2; }; pause(){ echo; read -r -p "按 Enter 返回菜单..." _ || true; }
@@ -25,15 +25,20 @@ print('unknown' if A is None or B is None else 'newer' if A>B else 'same' if A==
 PY
 }
 valid_version(){ [[ "$1" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([._-]?[A-Za-z]+([._-]?[0-9]+)?)?$ ]]; }
-
+latest_release_version(){
+  curl -fsSL --connect-timeout 8 --max-time 20 \
+    -H 'Accept: application/vnd.github+json' \
+    "https://api.github.com/repos/$RELEASE_REPO/releases/latest" 2>/dev/null \
+  | python3 -c 'import json,sys; j=json.load(sys.stdin); print((j.get("tag_name") or "").lstrip("vV"))' 2>/dev/null || true
+}
 check_update(){
   need_root
   local cur remote cmp
   cur="$(current_version)"
   info "正在检查更新..."
-  remote="$(curl -fsSL --connect-timeout 8 --max-time 15 "https://raw.githubusercontent.com/$GITHUB_REPO/$GITHUB_BRANCH/VERSION" 2>/dev/null | tr -d '[:space:]' || true)"
+  remote="$(latest_release_version)"
   if [[ -z "$remote" ]]; then
-    warn "暂时无法获取最新版本信息。"
+    warn "暂时无法获取最新正式版本信息。"
     return 1
   fi
   cmp="$(version_compare "$remote" "$cur")"
@@ -43,11 +48,10 @@ check_update(){
     newer)
       warn "检测到新版本。"
       echo
-      say "升级最新版本：${C_CYAN}xvpn update${C_RESET}"
-      say "指定此版本：  ${C_CYAN}xvpn update v$remote${C_RESET}"
+      say "直接执行：${C_CYAN}xvpn update${C_RESET}"
       ;;
     same) ok "当前已经是最新版本。" ;;
-    older) ok "当前安装版本高于在线最新版本。" ;;
+    older) ok "当前安装版本高于最新正式版本。" ;;
     *) warn "无法可靠比较版本号。" ;;
   esac
 }
@@ -56,13 +60,19 @@ update_panel(){
   need_root
   local target="${1:-}"
   if [[ -n "$target" ]]; then
-    valid_version "$target" || { err "版本格式无效，例如：xvpn update v1.2.0 或 xvpn update v1.2.0-rc1"; return 2; }
+    valid_version "$target" || { err "版本格式无效，例如：xvpn update v1.2.0"; return 2; }
     target="${target#v}"; target="${target#V}"
-    info "准备安装指定版本：v$target"
-    exec bash -c 'bash <(curl -fsSL "$1") --version "$2"' _ "$ONLINE_URL" "v$target"
+    info "正在安装 v$target..."
+    if [[ -f "$LOCAL_INSTALLER" ]]; then
+      exec bash "$LOCAL_INSTALLER" --version "v$target"
+    fi
+    exec bash -c 'bash <(curl -fsSL "$1") --version "$2"' _ "$LEGACY_ONLINE_INSTALLER" "v$target"
   else
-    info "准备部署最新版本。"
-    exec bash -c 'bash <(curl -fsSL "$1")' _ "$ONLINE_URL"
+    info "正在更新到最新正式版本..."
+    if [[ -f "$LOCAL_INSTALLER" ]]; then
+      exec bash "$LOCAL_INSTALLER"
+    fi
+    exec bash -c 'bash <(curl -fsSL "$1")' _ "$LEGACY_ONLINE_INSTALLER"
   fi
 }
 
@@ -120,16 +130,16 @@ case "${1:-}" in
   version) current_version ;;
   help|-h|--help) cat <<'HELP'
 XVPN Panel 命令：
-  xvpn                        打开中文管理菜单
-  xvpn check                  检查更新
-  xvpn update                  更新到最新版本
-  xvpn update v1.2.0           安装指定版本
-  xvpn domain                 配置/更换域名并申请 HTTPS
-  xvpn status                 查看服务状态
-  xvpn restart                重启 Panel
-  xvpn logs                   查看实时日志
-  xvpn password               重置管理员密码
-  xvpn version                显示当前版本
+  xvpn                         打开中文管理菜单
+  xvpn check                   检查更新
+  xvpn update                  直接更新到最新正式版本
+  xvpn update v1.2.0           安装或重新安装指定版本
+  xvpn domain                  配置/更换域名并申请 HTTPS
+  xvpn status                  查看服务状态
+  xvpn restart                 重启 Panel
+  xvpn logs                    查看实时日志
+  xvpn password                重置管理员密码
+  xvpn version                 显示当前版本
 HELP
   ;;
   *) err "未知命令：$1"; say "执行 xvpn help 查看可用命令。"; exit 2 ;;

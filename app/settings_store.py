@@ -1,16 +1,19 @@
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
 from .db import connect, utcnow
 
 DEFAULTS = {
-    "panel_name": "VPN Panel",
+    "panel_name": "XVPN Panel",
     "panel_subtitle": "私人访问控制台",
     "token_days": "30",
     "registration_enabled": "1",
-    # dev8 backup / Telegram defaults
+    # Backup / Telegram defaults
     "auto_backup_enabled": "0",
     "backup_interval": "daily",
     "backup_time": "04:00",
     "backup_keep": "7",
     "backup_timezone": "UTC",
+    "panel_timezone": "UTC",
     "telegram_enabled": "0",
     "telegram_chat_id": "",
     "telegram_bot_token_enc": "",
@@ -50,6 +53,12 @@ def apply_settings(app):
     except (TypeError, ValueError):
         app.config["TOKEN_DAYS"] = 30
     app.config["REGISTRATION_ENABLED"] = values.get("registration_enabled", "1") == "1"
+    tz_name = values.get("panel_timezone") or values.get("backup_timezone") or "UTC"
+    try:
+        ZoneInfo(tz_name)
+    except ZoneInfoNotFoundError:
+        tz_name = "UTC"
+    app.config["PANEL_TIMEZONE"] = tz_name
     return values
 
 

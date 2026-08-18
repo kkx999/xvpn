@@ -15,7 +15,7 @@ def create_app():
     app.secret_key = os.environ.get("SECRET_KEY", "dev-only-change-me")
     # Keep Chinese API messages readable in curl/browser output.
     app.json.ensure_ascii = False
-    app.config["PANEL_NAME"] = os.environ.get("PANEL_NAME", "VPN Panel")
+    app.config["PANEL_NAME"] = os.environ.get("PANEL_NAME", "XVPN Panel")
     app.config["PANEL_SUBTITLE"] = os.environ.get("PANEL_SUBTITLE", "私人访问控制台")
     app.config["TOKEN_DAYS"] = int(os.environ.get("TOKEN_DAYS", "30"))
     app.config["SESSION_COOKIE_HTTPONLY"] = True

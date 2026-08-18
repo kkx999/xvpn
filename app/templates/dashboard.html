@@ -1,10 +1,116 @@
-{% extends 'base.html' %}{% block heading %}概览{% endblock %}{% block subheading %}快速查看账户、节点与邀请码状态{% endblock %}
+{% extends 'base.html' %}
+{% block heading %}概览{% endblock %}
+{% block subheading %}快速查看账户、节点与今日流量{% endblock %}
 {% block content %}
 <div class="stat-grid">
   <div class="stat-card"><span>用户总数</span><strong>{{ stats.users }}</strong><small>{{ stats.active_users }} 个正常</small></div>
   <div class="stat-card"><span>节点总数</span><strong>{{ stats.nodes }}</strong><small>{{ stats.enabled_nodes }} 个已启用</small></div>
   <div class="stat-card"><span>可用邀请码</span><strong>{{ stats.invites }}</strong><small>剩余 {{ stats.invite_slots }} 次注册名额</small></div>
 </div>
-<div class="panel-card"><div class="card-head"><div><h2>最近注册</h2><p>最新 6 个账户</p></div><a class="soft-btn" href="{{ url_for('admin.users') }}">查看全部</a></div>
-<div class="table-wrap"><table><thead><tr><th>用户名</th><th>状态</th><th>注册时间</th><th>最后登录</th></tr></thead><tbody>{% for u in recent_users %}<tr><td><strong>{{ u.username }}</strong></td><td><span class="badge {{ 'green' if u.status=='active' else 'gray' }}">{{ '正常' if u.status=='active' else '停用' }}</span></td><td>{{ u.created_at[:16].replace('T',' ') }}</td><td>{{ (u.last_login_at or '—')[:16].replace('T',' ') }}</td></tr>{% else %}<tr><td colspan="4" class="empty">暂无用户</td></tr>{% endfor %}</tbody></table></div></div>
+
+<section class="panel-card dashboard-traffic-card" aria-labelledby="dashboard-traffic-title">
+  <div class="card-head dashboard-traffic-head">
+    <div>
+      <h2 id="dashboard-traffic-title">今日流量概览</h2>
+      <p>{{ traffic.day }} · {{ traffic.timezone }} · Android 客户端上报汇总</p>
+    </div>
+    <div class="traffic-tabs" role="tablist" aria-label="流量排行维度">
+      <button class="traffic-tab active" type="button" role="tab" aria-selected="true" aria-controls="traffic-users-panel" data-traffic-tab="users">用户排行</button>
+      <button class="traffic-tab" type="button" role="tab" aria-selected="false" aria-controls="traffic-nodes-panel" data-traffic-tab="nodes">节点排行</button>
+    </div>
+  </div>
+
+  <div class="dashboard-traffic-summary">
+    <div class="dashboard-traffic-metric">
+      <span>今日总流量</span>
+      <strong>{{ format_bytes(traffic.upload_bytes + traffic.download_bytes) }}</strong>
+      <small>上传 {{ format_bytes(traffic.upload_bytes) }} · 下载 {{ format_bytes(traffic.download_bytes) }}</small>
+    </div>
+    <div class="dashboard-traffic-metric">
+      <span>活跃用户</span>
+      <strong>{{ traffic.active_users }}</strong>
+      <small>今日产生有效流量</small>
+    </div>
+    <div class="dashboard-traffic-metric">
+      <span>活跃节点</span>
+      <strong>{{ traffic.active_nodes }}</strong>
+      <small>今日收到有效流量上报</small>
+    </div>
+  </div>
+
+  <div class="traffic-rank-panel active" id="traffic-users-panel" role="tabpanel" data-traffic-panel="users">
+    {% if traffic.user_rank %}
+    <div class="traffic-rank-list">
+      {% for item in traffic.user_rank %}
+      <div class="traffic-rank-item" style="--rank-width:{{ item.percent }}%">
+        <span class="traffic-rank-no">{{ loop.index }}</span>
+        <div class="traffic-rank-main">
+          <div class="traffic-rank-line">
+            <div class="traffic-rank-name"><strong>{{ item.label }}</strong><small>{{ item.meta }}</small></div>
+            <strong class="traffic-rank-total">{{ format_bytes(item.total_bytes) }}</strong>
+          </div>
+          <div class="traffic-rank-track" aria-hidden="true"><span></span></div>
+          <div class="traffic-rank-detail"><span>上传 {{ format_bytes(item.upload_bytes) }}</span><span>下载 {{ format_bytes(item.download_bytes) }}</span></div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="traffic-empty-state"><span class="traffic-empty-mark">0</span><strong>暂无今日用户流量</strong><p>Android 客户端开始上报并产生流量后，这里会显示 TOP 5 用户。</p></div>
+    {% endif %}
+  </div>
+
+  <div class="traffic-rank-panel" id="traffic-nodes-panel" role="tabpanel" data-traffic-panel="nodes" hidden>
+    {% if traffic.node_rank %}
+    <div class="traffic-rank-list">
+      {% for item in traffic.node_rank %}
+      <div class="traffic-rank-item" style="--rank-width:{{ item.percent }}%">
+        <span class="traffic-rank-no">{{ loop.index }}</span>
+        <div class="traffic-rank-main">
+          <div class="traffic-rank-line">
+            <div class="traffic-rank-name"><strong>{{ item.label }}</strong><small>{{ item.meta }}</small></div>
+            <strong class="traffic-rank-total">{{ format_bytes(item.total_bytes) }}</strong>
+          </div>
+          <div class="traffic-rank-track" aria-hidden="true"><span></span></div>
+          <div class="traffic-rank-detail"><span>上传 {{ format_bytes(item.upload_bytes) }}</span><span>下载 {{ format_bytes(item.download_bytes) }}</span></div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="traffic-empty-state"><span class="traffic-empty-mark">0</span><strong>暂无今日节点流量</strong><p>新版 Android 上报 node_id 后，这里会按节点汇总并显示 TOP 5。</p></div>
+    {% endif %}
+  </div>
+</section>
+
+<script>
+(() => {
+  const tabs = [...document.querySelectorAll('[data-traffic-tab]')];
+  const panels = [...document.querySelectorAll('[data-traffic-panel]')];
+  const activate = key => {
+    tabs.forEach(tab => {
+      const active = tab.dataset.trafficTab === key;
+      tab.classList.toggle('active', active);
+      tab.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+    panels.forEach(panel => {
+      const active = panel.dataset.trafficPanel === key;
+      panel.hidden = !active;
+      panel.classList.toggle('active', active);
+      if (active) requestAnimationFrame(() => panel.querySelectorAll('.traffic-rank-item').forEach((row, i) => setTimeout(() => row.classList.add('is-ready'), i * 45)));
+    });
+  };
+  tabs.forEach((tab, index) => {
+    tab.addEventListener('click', () => activate(tab.dataset.trafficTab));
+    tab.addEventListener('keydown', event => {
+      if (!['ArrowLeft','ArrowRight'].includes(event.key)) return;
+      event.preventDefault();
+      const next = event.key === 'ArrowRight' ? (index + 1) % tabs.length : (index - 1 + tabs.length) % tabs.length;
+      tabs[next].focus();
+      activate(tabs[next].dataset.trafficTab);
+    });
+  });
+  activate('users');
+})();
+</script>
 {% endblock %}

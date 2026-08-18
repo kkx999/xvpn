@@ -8,6 +8,7 @@ from .db import connect
 from .settings_store import get_settings, set_settings
 from .telegram_client import send_backup, send_message
 from .version import APP_VERSION
+from .event_log import log_event
 
 INTERVAL_HOURS = {
     "6h": 6,
@@ -50,7 +51,7 @@ def is_due(values, now_utc=None):
     hours = INTERVAL_HOURS.get(interval, 24)
     now_utc = now_utc or datetime.now(timezone.utc)
     last = _parse_iso(values.get("backup_last_run_at"))
-    tz = _tz(values.get("backup_timezone", "UTC"))
+    tz = _tz(values.get("panel_timezone") or values.get("backup_timezone", "UTC"))
     now_local = now_utc.astimezone(tz)
 
     # Short intervals start immediately if never run, then use elapsed time.
@@ -83,6 +84,8 @@ def run_scheduled_backup_once(force=False):
     if not force and not is_due(values):
         return {"ran": False, "reason": "not_due"}
     now = datetime.now(timezone.utc)
+    tz = _tz(values.get("panel_timezone") or values.get("backup_timezone", "UTC"))
+    now_local = now.astimezone(tz)
     set_settings({"backup_last_run_at": now.isoformat(timespec="seconds")})
     try:
         path = create_backup("auto")
@@ -93,12 +96,14 @@ def run_scheduled_backup_once(force=False):
         prune_auto_backups(max(1, min(100, keep)))
         status = f"成功：{path.name}"
         set_settings({"backup_last_status": status})
+        log_event("backup", "success", f"自动备份成功：{path.name}")
     except Exception as exc:
         msg = f"失败：{exc}"
         set_settings({"backup_last_status": msg})
+        log_event("backup", "error", f"自动备份失败：{exc}")
         if values.get("telegram_enabled", "0") == "1":
             try:
-                send_message(f"VPN Panel 自动备份失败\n\n时间：{now.isoformat(timespec='seconds')}\n原因：{exc}")
+                send_message(f"XVPN Panel 自动备份失败\n\n时间：{now_local.strftime('%Y-%m-%d %H:%M:%S')} ({tz})\n原因：{exc}")
             except Exception:
                 pass
         return {"ran": True, "ok": False, "error": str(exc)}
@@ -108,8 +113,8 @@ def run_scheduled_backup_once(force=False):
         stats = _stats()
         size_mb = path.stat().st_size / 1024 / 1024
         caption = (
-            "VPN Panel 自动备份\n\n"
-            f"时间：{now.isoformat(timespec='seconds')}\n"
+            "XVPN Panel 自动备份\n\n"
+            f"时间：{now_local.strftime('%Y-%m-%d %H:%M:%S')} ({tz})\n"
             f"版本：{APP_VERSION}\n"
             f"启用节点：{stats['nodes']}\n"
             f"正常用户：{stats['users']}\n"
@@ -119,7 +124,9 @@ def run_scheduled_backup_once(force=False):
         try:
             send_backup(path, caption)
             telegram_result = f"成功：{path.name}"
+            log_event("telegram", "success", f"自动备份已发送：{path.name}")
         except Exception as exc:
             telegram_result = f"失败：{exc}"
+            log_event("telegram", "error", f"自动备份发送失败：{exc}")
         set_settings({"telegram_last_status": telegram_result})
     return {"ran": True, "ok": True, "path": str(path), "telegram": telegram_result}

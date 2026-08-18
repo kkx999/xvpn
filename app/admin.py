@@ -1,7 +1,9 @@
 import base64
+import hashlib
 import json
 import secrets
 import string
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from functools import wraps
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -16,6 +18,8 @@ from .backup_manager import create_backup, delete_backup, get_backup_path, list_
 from .settings_store import apply_settings, get_settings, set_settings
 from .telegram_client import test_connection as telegram_test_connection
 from .version import APP_VERSION
+from .event_log import clear_events, list_events, log_event
+from .traffic import format_bytes, mask_device_id, traffic_period_keys, traffic_summary
 
 admin_bp = Blueprint("admin", __name__, template_folder="templates", static_folder="static")
 
@@ -84,6 +88,124 @@ def _client_ip():
     return request.remote_addr or ""
 
 
+def _admin_login_rate_key():
+    raw = f"admin-web-login:{_client_ip() or 'unknown'}"
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _admin_login_rate_check(max_attempts=10, window_seconds=900, block_seconds=900):
+    key = _admin_login_rate_key()
+    now = datetime.now(timezone.utc)
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM auth_rate_limits WHERE rate_key=?", (key,)).fetchone()
+        if not row:
+            return 0
+        if row["blocked_until"]:
+            blocked = datetime.fromisoformat(row["blocked_until"])
+            if blocked > now:
+                return max(1, int((blocked - now).total_seconds()))
+        started = datetime.fromisoformat(row["window_started_at"])
+        if (now - started).total_seconds() > window_seconds:
+            conn.execute("DELETE FROM auth_rate_limits WHERE rate_key=?", (key,))
+            conn.commit()
+            return 0
+        if int(row["attempts"]) >= max_attempts:
+            blocked = now + timedelta(seconds=block_seconds)
+            conn.execute(
+                "UPDATE auth_rate_limits SET blocked_until=? WHERE rate_key=?",
+                (blocked.isoformat(timespec="seconds"), key),
+            )
+            conn.commit()
+            return block_seconds
+    return 0
+
+
+def _admin_login_rate_fail(max_attempts=10, window_seconds=900, block_seconds=900):
+    key = _admin_login_rate_key()
+    now = datetime.now(timezone.utc)
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM auth_rate_limits WHERE rate_key=?", (key,)).fetchone()
+        if not row or (now - datetime.fromisoformat(row["window_started_at"])).total_seconds() > window_seconds:
+            attempts = 1
+            conn.execute(
+                "INSERT OR REPLACE INTO auth_rate_limits(rate_key,attempts,window_started_at,blocked_until) VALUES(?,?,?,NULL)",
+                (key, attempts, now.isoformat(timespec="seconds")),
+            )
+        else:
+            attempts = int(row["attempts"]) + 1
+            blocked_until = row["blocked_until"]
+            if attempts >= max_attempts:
+                blocked_until = (now + timedelta(seconds=block_seconds)).isoformat(timespec="seconds")
+            conn.execute(
+                "UPDATE auth_rate_limits SET attempts=?,blocked_until=? WHERE rate_key=?",
+                (attempts, blocked_until, key),
+            )
+        conn.commit()
+    return attempts >= max_attempts
+
+
+def _admin_login_rate_reset():
+    with connect() as conn:
+        conn.execute("DELETE FROM auth_rate_limits WHERE rate_key=?", (_admin_login_rate_key(),))
+        conn.commit()
+
+
+def _page_arg(name="page"):
+    try:
+        return max(1, int(request.args.get(name, "1")))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _filtered_redirect(endpoint, allowed_status):
+    query = request.form.get("return_q", "").strip()[:64]
+    status = request.form.get("return_status", "all").strip().lower()
+    if status not in allowed_status:
+        status = "all"
+    try:
+        page = max(1, int(request.form.get("return_page", "1")))
+    except (TypeError, ValueError):
+        page = 1
+    args = {"page": page}
+    if query:
+        args["q"] = query
+    if status != "all":
+        args["status"] = status
+    return redirect(url_for(endpoint, **args))
+
+
+def _users_redirect():
+    return _filtered_redirect("admin.users", {"all", "active", "disabled"})
+
+
+def _invites_redirect():
+    return _filtered_redirect("admin.invites", {"all", "active", "used", "revoked"})
+
+
+def _settings_backup_redirect():
+    try:
+        page = max(1, int(request.form.get("backup_page", "1")))
+    except (TypeError, ValueError):
+        page = 1
+    return redirect(url_for("admin.settings", backup_page=page) + "#backup-records")
+
+
+def _panel_time(value, short=False):
+    if not value or value == "—":
+        return "—"
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        try:
+            zone = ZoneInfo(current_app.config.get("PANEL_TIMEZONE", "UTC"))
+        except ZoneInfoNotFoundError:
+            zone = timezone.utc
+        return dt.astimezone(zone).strftime("%Y-%m-%d %H:%M" if short else "%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return str(value).replace("T", " ")[:16 if short else 19]
+
+
 @admin_bp.before_request
 def admin_ip_guard():
     allowed = current_app.config.get("ADMIN_ALLOWED_IPS", set())
@@ -102,6 +224,7 @@ def admin_required(view):
         if not admin or int(session.get("admin_session_version", 0)) != int(admin["session_version"]):
             session.clear()
             return redirect(url_for("admin.login"))
+        session["admin_username"] = admin["username"]
         return view(*args, **kwargs)
     return wrapped
 
@@ -129,6 +252,10 @@ def inject_globals():
         "country_map": COUNTRY_MAP,
         "country_flag": country_flag,
         "panel_version": APP_VERSION,
+        "format_bytes": format_bytes,
+        "mask_device_id": mask_device_id,
+        "panel_time": _panel_time,
+        "panel_timezone": current_app.config.get("PANEL_TIMEZONE", "UTC"),
         "one_time_secret": session.pop("one_time_secret", None),
     }
 
@@ -140,19 +267,29 @@ def login():
     if request.method == "POST":
         if not require_csrf():
             return "CSRF validation failed", 400
+        retry_after = _admin_login_rate_check()
+        if retry_after:
+            minutes = max(1, (retry_after + 59) // 60)
+            flash(f"登录失败次数过多，请约 {minutes} 分钟后再试", "error")
+            return render_template("login.html"), 429
         with connect() as conn:
             admin = conn.execute(
                 "SELECT * FROM admins WHERE username=? COLLATE NOCASE",
                 (request.form.get("username", "").strip(),),
             ).fetchone()
         if admin and check_password_hash(admin["password_hash"], request.form.get("password", "")):
+            _admin_login_rate_reset()
             session.clear()
             session["admin_id"] = admin["id"]
             session["admin_username"] = admin["username"]
             session["admin_session_version"] = int(admin["session_version"])
             csrf_token()
             return redirect(url_for("admin.dashboard"))
-        flash("用户名或密码错误", "error")
+        blocked = _admin_login_rate_fail()
+        if blocked:
+            flash("登录失败已达到 10 次，此 IP 暂停登录 15 分钟", "error")
+        else:
+            flash("用户名或密码错误", "error")
     return render_template("login.html")
 
 
@@ -168,6 +305,8 @@ def logout():
 @admin_bp.get("/")
 @admin_required
 def dashboard():
+    tz_name = current_app.config.get("PANEL_TIMEZONE", "UTC")
+    today, _ = traffic_period_keys(tz_name=tz_name)
     with connect() as conn:
         stats = {
             "users": conn.execute("SELECT COUNT(*) c FROM users").fetchone()["c"],
@@ -181,10 +320,73 @@ def dashboard():
                 "SELECT COALESCE(SUM(max_uses-use_count),0) c FROM invites WHERE status='active' AND use_count < max_uses"
             ).fetchone()["c"],
         }
-        recent_users = conn.execute(
-            "SELECT username,status,created_at,last_login_at FROM users ORDER BY id DESC LIMIT 6"
+        traffic_row = conn.execute(
+            """SELECT COALESCE(SUM(upload_bytes),0) upload_bytes,
+                      COALESCE(SUM(download_bytes),0) download_bytes,
+                      COUNT(CASE WHEN upload_bytes + download_bytes > 0 THEN 1 END) active_users
+               FROM traffic_daily WHERE day=?""",
+            (today,),
+        ).fetchone()
+        active_nodes = int(conn.execute(
+            """SELECT COUNT(DISTINCT node_id) FROM traffic_node_daily
+               WHERE day=? AND upload_bytes + download_bytes > 0""",
+            (today,),
+        ).fetchone()[0])
+        user_rows = conn.execute(
+            """SELECT u.id user_id,u.username,t.upload_bytes,t.download_bytes,
+                      (t.upload_bytes+t.download_bytes) total_bytes
+               FROM traffic_daily t JOIN users u ON u.id=t.user_id
+               WHERE t.day=? AND (t.upload_bytes+t.download_bytes)>0
+               ORDER BY total_bytes DESC,u.id ASC LIMIT 5""",
+            (today,),
         ).fetchall()
-    return render_template("dashboard.html", stats=stats, recent_users=recent_users)
+        node_rows = conn.execute(
+            """SELECT t.node_id,
+                      COALESCE(n.name,MAX(t.node_name)) node_name,
+                      COALESCE(n.country,MAX(t.country)) country,
+                      COALESCE(n.region,MAX(t.region)) region,
+                      SUM(t.upload_bytes) upload_bytes,
+                      SUM(t.download_bytes) download_bytes,
+                      SUM(t.upload_bytes+t.download_bytes) total_bytes
+               FROM traffic_node_daily t
+               LEFT JOIN nodes n ON n.id=t.node_id
+               WHERE t.day=?
+               GROUP BY t.node_id,n.name,n.country,n.region
+               HAVING SUM(t.upload_bytes+t.download_bytes)>0
+               ORDER BY total_bytes DESC,t.node_id ASC LIMIT 5""",
+            (today,),
+        ).fetchall()
+
+    def rank_items(rows, kind):
+        max_total = max((int(row["total_bytes"] or 0) for row in rows), default=0)
+        items = []
+        for row in rows:
+            total = int(row["total_bytes"] or 0)
+            item = {
+                "upload_bytes": int(row["upload_bytes"] or 0),
+                "download_bytes": int(row["download_bytes"] or 0),
+                "total_bytes": total,
+                "percent": max(5.0, round((total / max_total) * 100, 1)) if max_total else 0,
+            }
+            if kind == "user":
+                item.update({"id": int(row["user_id"]), "label": row["username"], "meta": "用户"})
+            else:
+                location = " · ".join(x for x in (row["country"], row["region"]) if x)
+                item.update({"id": int(row["node_id"]), "label": row["node_name"] or f"节点 {row['node_id']}", "meta": location or "节点"})
+            items.append(item)
+        return items
+
+    traffic = {
+        "day": today,
+        "timezone": tz_name,
+        "upload_bytes": int(traffic_row["upload_bytes"] or 0),
+        "download_bytes": int(traffic_row["download_bytes"] or 0),
+        "active_users": int(traffic_row["active_users"] or 0),
+        "active_nodes": active_nodes,
+        "user_rank": rank_items(user_rows, "user"),
+        "node_rank": rank_items(node_rows, "node"),
+    }
+    return render_template("dashboard.html", stats=stats, traffic=traffic)
 
 
 def detect_protocol_details(raw: str):
@@ -576,13 +778,88 @@ def node_delete(node_id):
 @admin_bp.get("/users")
 @admin_required
 def users():
+    page = _page_arg()
+    per_page = 20
+    query = request.args.get("q", "").strip()[:64]
+    status_filter = request.args.get("status", "all").strip().lower()
+    if status_filter not in {"all", "active", "disabled"}:
+        status_filter = "all"
+    today, month = traffic_period_keys(tz_name=current_app.config.get("PANEL_TIMEZONE", "UTC"))
+    where = []
+    params = []
+    if query:
+        where.append("users.username LIKE ? COLLATE NOCASE")
+        params.append(f"%{query}%")
+    if status_filter != "all":
+        where.append("users.status=?")
+        params.append(status_filter)
+    where_sql = (" WHERE " + " AND ".join(where)) if where else ""
     with connect() as conn:
+        total = int(conn.execute(f"SELECT COUNT(*) FROM users{where_sql}", params).fetchone()[0])
+        pages = max(1, (total + per_page - 1) // per_page)
+        page = min(page, pages)
         rows = conn.execute(
-            """SELECT users.*, invites.code invite_code
-               FROM users LEFT JOIN invites ON invites.id=users.invite_id
-               ORDER BY users.id DESC"""
+            f"""WITH traffic AS (
+                   SELECT user_id,
+                          SUM(CASE WHEN day=? THEN upload_bytes+download_bytes ELSE 0 END) today_bytes,
+                          SUM(CASE WHEN substr(day,1,7)=? THEN upload_bytes+download_bytes ELSE 0 END) month_bytes,
+                          SUM(upload_bytes+download_bytes) total_bytes
+                   FROM traffic_daily GROUP BY user_id
+               ), reports AS (
+                   SELECT user_id, MAX(last_report_at) last_report_at, COUNT(*) device_count
+                   FROM traffic_device_counters GROUP BY user_id
+               )
+               SELECT users.*, invites.code invite_code,
+                      COALESCE(traffic.today_bytes,0) today_bytes,
+                      COALESCE(traffic.month_bytes,0) month_bytes,
+                      COALESCE(traffic.total_bytes,0) total_bytes,
+                      reports.last_report_at, COALESCE(reports.device_count,0) device_count
+               FROM users
+               LEFT JOIN invites ON invites.id=users.invite_id
+               LEFT JOIN traffic ON traffic.user_id=users.id
+               LEFT JOIN reports ON reports.user_id=users.id
+               {where_sql}
+               ORDER BY users.id DESC LIMIT ? OFFSET ?""",
+            [today, month, *params, per_page, (page - 1) * per_page],
         ).fetchall()
-    return render_template("users.html", users=rows)
+    return render_template(
+        "users.html", users=rows, total_users=total, page=page, pages=pages,
+        query=query, status_filter=status_filter, per_page=per_page,
+    )
+
+
+@admin_bp.get("/users/<int:user_id>/traffic")
+@admin_required
+def user_traffic(user_id):
+    try:
+        page = max(1, int(request.args.get("page", "1")))
+    except ValueError:
+        page = 1
+    per_page = 30
+    with connect() as conn:
+        user = conn.execute("SELECT id,username,status,created_at FROM users WHERE id=?", (user_id,)).fetchone()
+        if not user:
+            return "Not Found", 404
+        summary = traffic_summary(conn, user_id, tz_name=current_app.config.get("PANEL_TIMEZONE", "UTC"))
+        total_days = int(conn.execute("SELECT COUNT(*) FROM traffic_daily WHERE user_id=?", (user_id,)).fetchone()[0])
+        pages = max(1, (total_days + per_page - 1) // per_page)
+        page = min(page, pages)
+        daily = conn.execute(
+            """SELECT day,upload_bytes,download_bytes,report_count,updated_at
+               FROM traffic_daily WHERE user_id=? ORDER BY day DESC LIMIT ? OFFSET ?""",
+            (user_id, per_page, (page - 1) * per_page),
+        ).fetchall()
+        devices = conn.execute(
+            """SELECT c.device_id,c.session_id,c.node_id,c.upload_total_bytes,c.download_total_bytes,c.app_version,c.last_report_at,
+                      n.name node_name
+               FROM traffic_device_counters c LEFT JOIN nodes n ON n.id=c.node_id WHERE c.user_id=?
+               ORDER BY last_report_at DESC LIMIT 20""",
+            (user_id,),
+        ).fetchall()
+    return render_template(
+        "user_traffic.html", user=user, summary=summary, daily=daily, devices=devices,
+        page=page, pages=pages, total_days=total_days,
+    )
 
 
 @admin_bp.post("/users/<int:user_id>/toggle")
@@ -600,7 +877,38 @@ def user_toggle(user_id):
             conn.execute("DELETE FROM api_tokens WHERE user_id=?", (user_id,))
         conn.commit()
     flash("账户已停用并撤销登录状态" if status == "disabled" else "账户已恢复", "success")
-    return redirect(url_for("admin.users"))
+    return _users_redirect()
+
+
+@admin_bp.post("/users/<int:user_id>/logout-all")
+@admin_required
+def user_logout_all(user_id):
+    if not require_csrf():
+        return "CSRF validation failed", 400
+    with transaction() as conn:
+        user = conn.execute("SELECT username FROM users WHERE id=?", (user_id,)).fetchone()
+        if not user:
+            return "Not Found", 404
+        count = int(conn.execute("SELECT COUNT(*) FROM api_tokens WHERE user_id=?", (user_id,)).fetchone()[0])
+        conn.execute("DELETE FROM api_tokens WHERE user_id=?", (user_id,))
+    flash(f"{user['username']} 的登录状态已全部撤销（{count} 个 Token）", "success")
+    return _users_redirect()
+
+
+@admin_bp.post("/users/<int:user_id>/traffic/reset")
+@admin_required
+def user_traffic_reset(user_id):
+    if not require_csrf():
+        return "CSRF validation failed", 400
+    with transaction() as conn:
+        user = conn.execute("SELECT username FROM users WHERE id=?", (user_id,)).fetchone()
+        if not user:
+            return "Not Found", 404
+        conn.execute("DELETE FROM traffic_daily WHERE user_id=?", (user_id,))
+        conn.execute("DELETE FROM traffic_node_daily WHERE user_id=?", (user_id,))
+        conn.execute("DELETE FROM traffic_device_counters WHERE user_id=?", (user_id,))
+    flash(f"{user['username']} 的流量统计已重置；下一次 Android 上报会重新建立基线", "success")
+    return _users_redirect()
 
 
 def make_password(length=14):
@@ -619,7 +927,7 @@ def user_password(user_id):
     password = request.form.get("password", "")
     if len(password) < 8:
         flash("新密码至少 8 位", "error")
-        return redirect(url_for("admin.users"))
+        return _users_redirect()
     with connect() as conn:
         user = conn.execute("SELECT username FROM users WHERE id=?", (user_id,)).fetchone()
         if not user:
@@ -631,7 +939,7 @@ def user_password(user_id):
         conn.execute("DELETE FROM api_tokens WHERE user_id=?", (user_id,))
         conn.commit()
     flash(f"{user['username']} 的密码已修改，所有登录状态已撤销", "success")
-    return redirect(url_for("admin.users"))
+    return _users_redirect()
 
 
 @admin_bp.post("/users/<int:user_id>/password/random")
@@ -656,7 +964,7 @@ def user_password_random(user_id):
         "message": "密码只显示这一次，请现在复制保存。旧密码和旧登录状态已经失效。",
     }
     flash(f"{user['username']} 的密码已随机重置", "success")
-    return redirect(url_for("admin.users"))
+    return _users_redirect()
 
 
 @admin_bp.post("/users/<int:user_id>/delete")
@@ -668,23 +976,46 @@ def user_delete(user_id):
         conn.execute("UPDATE invites SET used_by=NULL WHERE used_by=?", (user_id,))
         conn.execute("DELETE FROM users WHERE id=?", (user_id,))
     flash("用户已删除", "success")
-    return redirect(url_for("admin.users"))
+    return _users_redirect()
 
 
 @admin_bp.get("/invites")
 @admin_required
 def invites():
+    page = _page_arg()
+    per_page = 20
+    query = request.args.get("q", "").strip()[:64]
+    status_filter = request.args.get("status", "all").strip().lower()
+    if status_filter not in {"all", "active", "used", "revoked"}:
+        status_filter = "all"
+    where = []
+    params = []
+    if query:
+        where.append("invites.code LIKE ? COLLATE NOCASE")
+        params.append(f"%{query}%")
+    if status_filter != "all":
+        where.append("invites.status=?")
+        params.append(status_filter)
+    where_sql = (" WHERE " + " AND ".join(where)) if where else ""
     with connect() as conn:
+        total = int(conn.execute(f"SELECT COUNT(*) FROM invites{where_sql}", params).fetchone()[0])
+        pages = max(1, (total + per_page - 1) // per_page)
+        page = min(page, pages)
         rows = conn.execute(
-            """SELECT invites.*,
+            f"""SELECT invites.*,
                       COUNT(users.id) current_user_count,
                       GROUP_CONCAT(users.username, '、') current_usernames
                FROM invites
                LEFT JOIN users ON users.invite_id=invites.id
+               {where_sql}
                GROUP BY invites.id
-               ORDER BY invites.id DESC"""
+               ORDER BY invites.id DESC LIMIT ? OFFSET ?""",
+            [*params, per_page, (page - 1) * per_page],
         ).fetchall()
-    return render_template("invites.html", invites=rows)
+    return render_template(
+        "invites.html", invites=rows, total_invites=total, page=page, pages=pages,
+        query=query, status_filter=status_filter, per_page=per_page,
+    )
 
 
 def _valid_custom_invite(code):
@@ -701,14 +1032,14 @@ def invite_create():
     code = request.form.get("code", "").strip()
     if not _valid_custom_invite(code):
         flash("邀请码需为 2-32 位，可使用中文、英文字母、数字、- 和 _", "error")
-        return redirect(url_for("admin.invites"))
+        return _invites_redirect()
     try:
         max_uses = int(request.form.get("max_uses", "1"))
     except ValueError:
         max_uses = 0
     if max_uses < 1 or max_uses > 10000:
         flash("可用次数需为 1-10000", "error")
-        return redirect(url_for("admin.invites"))
+        return _invites_redirect()
     try:
         with transaction() as conn:
             conn.execute(
@@ -718,10 +1049,10 @@ def invite_create():
     except Exception as exc:
         if "UNIQUE constraint failed" in str(exc):
             flash("这个邀请码已经存在，请换一个", "error")
-            return redirect(url_for("admin.invites"))
+            return _invites_redirect()
         raise
     flash(f"邀请码已创建：{code}，可使用 {max_uses} 次", "success")
-    return redirect(url_for("admin.invites"))
+    return _invites_redirect()
 
 
 @admin_bp.post("/invites/<int:invite_id>/revoke")
@@ -732,7 +1063,7 @@ def invite_revoke(invite_id):
     with connect() as conn:
         conn.execute("UPDATE invites SET status='revoked' WHERE id=? AND status='active'", (invite_id,))
         conn.commit()
-    return redirect(url_for("admin.invites"))
+    return _invites_redirect()
 
 
 @admin_bp.post("/invites/<int:invite_id>/delete")
@@ -748,15 +1079,29 @@ def invite_delete(invite_id):
         conn.execute("UPDATE users SET invite_id=NULL WHERE invite_id=?", (invite_id,))
         conn.execute("DELETE FROM invites WHERE id=?", (invite_id,))
     flash("邀请码记录已删除；已注册用户不受影响", "success")
-    return redirect(url_for("admin.invites"))
+    return _invites_redirect()
 
 
 @admin_bp.get("/settings")
 @admin_required
 def settings():
     values = get_settings()
-    backups = list_backups()
+    backup_page = _page_arg("backup_page")
+    backup_per_page = 10
+    all_backups = list_backups()
+    backup_total = len(all_backups)
+    backup_pages = max(1, (backup_total + backup_per_page - 1) // backup_per_page)
+    backup_page = min(backup_page, backup_pages)
+    backups = all_backups[(backup_page - 1) * backup_per_page:backup_page * backup_per_page]
+    runtime_events = list_events(10)
     db_path = Path(current_app.config["DATABASE_PATH"])
+    with connect() as conn:
+        latest_traffic = conn.execute(
+            """SELECT t.last_report_at,u.username,t.app_version
+               FROM traffic_device_counters t JOIN users u ON u.id=t.user_id
+               ORDER BY t.last_report_at DESC LIMIT 1"""
+        ).fetchone()
+        traffic_users = int(conn.execute("SELECT COUNT(DISTINCT user_id) FROM traffic_device_counters").fetchone()[0])
     system_info = {
         "host": request.host,
         "database": str(db_path),
@@ -768,6 +1113,10 @@ def settings():
         settings_values=values,
         backups=backups,
         system_info=system_info,
+        runtime_events=runtime_events,
+        latest_traffic=latest_traffic,
+        traffic_users=traffic_users,
+        backup_page=backup_page, backup_pages=backup_pages, backup_total=backup_total,
         telegram_configured=bool(values.get("telegram_bot_token_enc") and values.get("telegram_chat_id")),
     )
 
@@ -792,11 +1141,19 @@ def settings_system():
     if token_days < 1 or token_days > 3650:
         flash("登录有效期需为 1-3650 天", "error")
         return redirect(url_for("admin.settings"))
+    panel_timezone = request.form.get("panel_timezone", "UTC").strip() or "UTC"
+    try:
+        ZoneInfo(panel_timezone)
+    except ZoneInfoNotFoundError:
+        flash("面板时区无效，请使用例如 Asia/Shanghai、Asia/Hong_Kong 或 America/Los_Angeles", "error")
+        return redirect(url_for("admin.settings"))
     values = {
         "panel_name": panel_name,
         "panel_subtitle": panel_subtitle or "私人访问控制台",
         "token_days": str(token_days),
-        "registration_enabled": "1" if request.form.get("registration_enabled") == "1" else "0",
+        "registration_enabled": "1" if "1" in request.form.getlist("registration_enabled") else "0",
+        "panel_timezone": panel_timezone,
+        "backup_timezone": panel_timezone,
     }
     set_settings(values)
     apply_settings(current_app)
@@ -829,13 +1186,12 @@ def backup_automation_settings():
     if keep < 1 or keep > 100:
         flash("自动备份本地保留数量需为 1-100", "error")
         return redirect(url_for("admin.settings") + "#backup-section")
-    tz_name = request.form.get("backup_timezone", "UTC").strip() or "UTC"
+    current = get_settings()
+    tz_name = current.get("panel_timezone") or current.get("backup_timezone") or "UTC"
     try:
         ZoneInfo(tz_name)
     except ZoneInfoNotFoundError:
         tz_name = "UTC"
-
-    current = get_settings()
     bot_token = request.form.get("telegram_bot_token", "").strip()
     token_enc = current.get("telegram_bot_token_enc", "")
     if bot_token:
@@ -883,9 +1239,11 @@ def telegram_test():
         if supplied_chat:
             updates["telegram_chat_id"] = supplied_chat
         set_settings(updates)
+        log_event("telegram", "success", f"Telegram 测试成功：@{bot_name}")
         flash(f"Telegram 测试成功：{bot_name}；本次有效的 Token / Chat ID 已安全保存", "success")
     except ValueError as exc:
         set_settings({"telegram_last_status": f"测试失败：{exc}"})
+        log_event("telegram", "error", f"Telegram 测试失败：{exc}")
         flash(str(exc), "error")
     return redirect(url_for("admin.settings") + "#backup-section")
 
@@ -901,17 +1259,19 @@ def telegram_clear():
         "telegram_chat_id": "",
         "telegram_last_status": "Telegram 配置已清除",
     })
+    log_event("telegram", "info", "Telegram 配置已清除")
     flash("Telegram 配置已清除", "success")
     return redirect(url_for("admin.settings") + "#backup-section")
 
 
-@admin_bp.post("/settings/backups/download-new")
+@admin_bp.post("/settings/runtime-logs/clear")
 @admin_required
-def backup_download_new():
+def runtime_logs_clear():
     if not require_csrf():
         return "CSRF validation failed", 400
-    path = create_backup("manual")
-    return send_file(path, as_attachment=True, download_name=path.name)
+    clear_events()
+    flash("运行记录已清除；当前运行状态和用户流量统计不受影响", "success")
+    return redirect(url_for("admin.settings") + "#runtime-status")
 
 
 @admin_bp.post("/settings/backups/create")
@@ -919,8 +1279,13 @@ def backup_download_new():
 def backup_create():
     if not require_csrf():
         return "CSRF validation failed", 400
-    path = create_backup("manual")
-    flash(f"备份已创建：{path.name}", "success")
+    try:
+        path = create_backup("manual")
+        log_event("backup", "success", f"手动备份成功：{path.name}")
+        flash(f"手动备份已创建：{path.name}", "success")
+    except Exception as exc:
+        log_event("backup", "error", f"手动备份失败：{exc}")
+        flash(f"手动备份失败：{exc}", "error")
     return redirect(url_for("admin.settings") + "#backup-section")
 
 
@@ -948,7 +1313,7 @@ def backup_restore(name):
         flash(str(exc), "error")
         return redirect(url_for("admin.settings") + "#backup-section")
     flash("备份恢复完成；恢复前的数据已自动再备份一份", "success")
-    return redirect(url_for("admin.settings") + "#backup-section")
+    return _settings_backup_redirect()
 
 
 @admin_bp.post("/settings/backups/<path:name>/delete")
@@ -961,7 +1326,7 @@ def backup_delete(name):
     except ValueError:
         return "Not Found", 404
     flash("备份文件已删除", "success")
-    return redirect(url_for("admin.settings") + "#backup-section")
+    return _settings_backup_redirect()
 
 
 @admin_bp.post("/settings/backups/upload")
@@ -976,7 +1341,7 @@ def backup_upload_restore():
     if request.content_length and request.content_length > 50 * 1024 * 1024:
         flash("备份文件不能超过 50MB", "error")
         return redirect(url_for("admin.settings") + "#backup-section")
-    temp_name = f"vpn-panel-upload-{secrets.token_hex(6)}.zip"
+    temp_name = f"xvpn-panel-upload-{secrets.token_hex(6)}.zip"
     temp_path = get_backup_path(temp_name)
     upload.save(temp_path)
     try:
@@ -989,6 +1354,46 @@ def backup_upload_restore():
             temp_path.unlink()
     flash("上传的备份已恢复；恢复前的数据已自动备份", "success")
     return redirect(url_for("admin.settings") + "#backup-section")
+
+
+@admin_bp.post("/settings/username")
+@admin_required
+def admin_username():
+    if not require_csrf():
+        return "CSRF validation failed", 400
+    new_username = request.form.get("new_username", "").strip()
+    current_password = request.form.get("current_password", "")
+    if len(new_username) < 3 or len(new_username) > 32:
+        flash("管理员用户名长度需为 3-32 位", "error")
+        return redirect(url_for("admin.settings"))
+    if not new_username.replace("_", "").replace("-", "").isalnum():
+        flash("管理员用户名只能包含字母、数字、下划线和短横线", "error")
+        return redirect(url_for("admin.settings"))
+    with transaction() as conn:
+        admin = conn.execute("SELECT * FROM admins WHERE id=?", (session["admin_id"],)).fetchone()
+        if not admin or not check_password_hash(admin["password_hash"], current_password):
+            flash("当前密码错误", "error")
+            return redirect(url_for("admin.settings"))
+        if conn.execute("SELECT 1 FROM users WHERE username=? COLLATE NOCASE", (new_username,)).fetchone():
+            flash("该用户名已被 App 用户使用，请更换", "error")
+            return redirect(url_for("admin.settings"))
+        conflict = conn.execute("SELECT 1 FROM admins WHERE username=? COLLATE NOCASE AND id<>?", (new_username, admin["id"])).fetchone()
+        if conflict:
+            flash("管理员用户名已存在", "error")
+            return redirect(url_for("admin.settings"))
+        if new_username.lower() == str(admin["username"]).lower():
+            flash("管理员用户名没有变化", "error")
+            return redirect(url_for("admin.settings"))
+        next_version = int(admin["session_version"]) + 1
+        conn.execute(
+            "UPDATE admins SET username=?,updated_at=?,session_version=? WHERE id=?",
+            (new_username, utcnow(), next_version, admin["id"]),
+        )
+        conn.execute("DELETE FROM admin_api_tokens WHERE admin_id=?", (admin["id"],))
+    session["admin_username"] = new_username
+    session["admin_session_version"] = next_version
+    flash("管理员用户名已修改；其他后台和 App 登录状态已失效", "success")
+    return redirect(url_for("admin.settings"))
 
 
 @admin_bp.post("/settings/password")
@@ -1015,6 +1420,7 @@ def admin_password():
             "UPDATE admins SET password_hash=?,updated_at=?,session_version=? WHERE id=?",
             (generate_password_hash(new_password, method="scrypt"), utcnow(), next_version, admin["id"]),
         )
+        conn.execute("DELETE FROM admin_api_tokens WHERE admin_id=?", (admin["id"],))
         conn.commit()
     session["admin_session_version"] = next_version
     flash("管理员密码已修改，其他后台登录状态已失效", "success")

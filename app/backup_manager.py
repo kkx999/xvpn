@@ -34,13 +34,30 @@ def _safe_name(name: str):
     return name
 
 
+
+
+def _scrub_auth_state(path: Path):
+    """Remove revocable authentication/runtime state from a backup database."""
+    conn = sqlite3.connect(path)
+    try:
+        for table in ("api_tokens", "admin_api_tokens", "auth_rate_limits"):
+            try:
+                conn.execute(f"DELETE FROM {table}")
+            except sqlite3.OperationalError:
+                # Older backups may not have every table yet.
+                pass
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def create_backup(kind="manual"):
     now = datetime.now(timezone.utc)
     stamp = now.strftime("%Y%m%d-%H%M%S")
-    filename = f"vpn-panel-{kind}-{stamp}.zip"
+    filename = f"xvpn-panel-{kind}-{stamp}.zip"
     target = backup_dir() / filename
 
-    with tempfile.TemporaryDirectory(prefix="vpn-panel-backup-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="xvpn-panel-backup-") as tmp:
         tmp_db = Path(tmp) / "panel.db"
         src = connect()
         dst = sqlite3.connect(tmp_db)
@@ -50,22 +67,13 @@ def create_backup(kind="manual"):
         finally:
             dst.close()
             src.close()
-        # Authentication sessions are deliberately excluded. Restoring a backup must
-        # never revive previously expired/revoked App tokens or old brute-force state.
-        scrub = sqlite3.connect(tmp_db)
-        try:
-            scrub.execute("DELETE FROM api_tokens")
-            try:
-                scrub.execute("DELETE FROM auth_rate_limits")
-            except sqlite3.OperationalError:
-                pass
-            scrub.commit()
-        finally:
-            scrub.close()
+        # Authentication sessions are deliberately excluded. User App tokens,
+        # administrator App tokens and brute-force state must never travel with backups.
+        _scrub_auth_state(tmp_db)
         sha = hashlib.sha256(tmp_db.read_bytes()).hexdigest()
         manifest = {
             "format": 2,
-            "service": "VPN Panel",
+            "service": "XVPN Panel",
             "version": APP_VERSION,
             "created_at": now.isoformat(timespec="seconds"),
             "kind": kind,
@@ -78,21 +86,22 @@ def create_backup(kind="manual"):
             zf.write(tmp_db, "panel.db")
             zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
             # Including the key makes the archive portable. Restore re-encrypts sensitive
-            # fields with the destination instance key, so /etc/vpn-panel.env need not match.
+            # fields with the destination instance key, so /etc/xvpn-panel.env need not match.
             zf.writestr("recovery.key", current_app.config["FERNET_KEY"])
     return target
 
 
 def _kind_from_name(name):
     for kind in ("manual", "auto", "pre-restore"):
-        if name.startswith(f"vpn-panel-{kind}-"):
+        if name.startswith(f"xvpn-panel-{kind}-") or name.startswith(f"vpn-panel-{kind}-"):
             return kind
     return "other"
 
 
 def list_backups():
     rows = []
-    for path in sorted(backup_dir().glob("vpn-panel-*.zip"), key=lambda p: p.stat().st_mtime, reverse=True):
+    paths = set(backup_dir().glob("xvpn-panel-*.zip")) | set(backup_dir().glob("vpn-panel-*.zip"))
+    for path in sorted(paths, key=lambda p: p.stat().st_mtime, reverse=True):
         st = path.stat()
         rows.append(
             {
@@ -175,13 +184,13 @@ def restore_backup(archive_path):
     archive_path = Path(archive_path)
     if not archive_path.exists():
         raise ValueError("备份文件不存在")
-    with tempfile.TemporaryDirectory(prefix="vpn-panel-restore-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="xvpn-panel-restore-") as tmp:
         tmp_dir = Path(tmp)
         try:
             with zipfile.ZipFile(archive_path, "r") as zf:
                 names = set(zf.namelist())
                 if "panel.db" not in names or "manifest.json" not in names:
-                    raise ValueError("不是有效的 VPN Panel 备份")
+                    raise ValueError("不是有效的 XVPN Panel 备份")
                 manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
                 fmt = int(manifest.get("format", 1))
                 zf.extract("panel.db", tmp_dir)
@@ -192,10 +201,10 @@ def restore_backup(archive_path):
                     except Exception as exc:
                         raise ValueError("备份恢复密钥格式无效") from exc
                 else:
-                    # Backward compatibility with dev7: old archives can only be restored
+                    # Backward compatibility with older format-1 archives: they can only be restored
                     # when the destination kept the same Fernet key.
                     if manifest.get("fernet_fingerprint") != _key_fingerprint():
-                        raise ValueError("这是旧版备份且加密密钥不匹配；请在原实例恢复或使用 dev8 新备份")
+                        raise ValueError("这是旧格式备份且加密密钥不匹配；请在原实例恢复，或先使用当前版本重新创建备份")
                     backup_key = current_app.config["FERNET_KEY"]
         except (zipfile.BadZipFile, json.JSONDecodeError) as exc:
             raise ValueError("备份压缩包损坏或格式不正确") from exc
@@ -206,6 +215,9 @@ def restore_backup(archive_path):
         if expected and hashlib.sha256(src_db.read_bytes()).hexdigest() != expected:
             raise ValueError("备份数据库校验值不匹配")
 
+        # Old archives may still contain App tokens. Scrub again during restore so
+        # restoring any compatible backup cannot revive an old user/admin App login.
+        _scrub_auth_state(src_db)
         _reencrypt_db(src_db, backup_key, current_app.config["FERNET_KEY"])
         _validate_db(src_db)
         create_backup("pre-restore")

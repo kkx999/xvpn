@@ -3,7 +3,7 @@ from pathlib import Path
 
 
 def _read_version() -> str:
-    env = os.environ.get("VPN_PANEL_VERSION", "").strip()
+    env = os.environ.get("XVPN_PANEL_VERSION", "").strip() or os.environ.get("VPN_PANEL_VERSION", "").strip()
     if env:
         return env.lstrip("vV")
     # app/version.py -> app -> project root

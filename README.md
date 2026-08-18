@@ -31,14 +31,14 @@ bash <(curl -fsSL https://raw.githubusercontent.com/kkx999/xvpn/main/install-onl
 
 ## 指定版本
 
-指定版本需要已发布为 GitHub Release 或 Tag：
+指定版本需要已经创建对应 GitHub Release，并包含正式 ZIP 与 `SHA256SUMS.txt`：
 
 ```bash
 apt update && apt install -y curl ca-certificates && \
 bash <(curl -fsSL https://raw.githubusercontent.com/kkx999/xvpn/main/install-online.sh) --version v1.2.0
 ```
 
-或安装后：
+或安装后直接执行：
 
 ```bash
 xvpn update v1.2.0
@@ -50,6 +50,7 @@ xvpn update v1.2.0
 xvpn
 xvpn check
 xvpn update
+xvpn update v1.2.0
 xvpn domain
 xvpn status
 xvpn restart
@@ -58,4 +59,4 @@ xvpn password
 xvpn version
 ```
 
-Android 接口见 `APP_API.md` / `APP_API_OPENAPI.yaml`，GitHub 更新说明见 `GITHUB_UPDATE.md`。
+更新默认只使用 Latest Release 正式资产，不再用 `main` 分支源码覆盖生产环境。Android 接口见 `APP_API.md` / `APP_API_OPENAPI.yaml`，GitHub 更新说明见 `GITHUB_UPDATE.md`。

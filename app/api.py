@@ -9,6 +9,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from .crypto import decrypt_text
 from .db import connect, transaction, utcnow
 from .version import APP_VERSION
+from .traffic import traffic_period_keys, traffic_summary
 
 api_bp = Blueprint("api", __name__)
 
@@ -103,6 +104,18 @@ def _issue_token(conn, user_id):
     return raw, expires
 
 
+def _issue_admin_token(conn, admin_id):
+    now = datetime.now(timezone.utc)
+    conn.execute("DELETE FROM admin_api_tokens WHERE expires_at<=?", (now.isoformat(timespec="seconds"),))
+    raw = secrets.token_urlsafe(48)
+    expires = now + timedelta(days=current_app.config["TOKEN_DAYS"])
+    conn.execute(
+        "INSERT INTO admin_api_tokens(admin_id,token_hash,expires_at,created_at) VALUES(?,?,?,?)",
+        (admin_id, token_hash(raw), expires.isoformat(timespec="seconds"), utcnow()),
+    )
+    return raw, expires
+
+
 def bearer_required(view):
     @wraps(view)
     def wrapped(*args, **kwargs):
@@ -110,27 +123,44 @@ def bearer_required(view):
         if not auth.startswith("Bearer "):
             return response_error("UNAUTHORIZED", "请先登录", 401)
         raw = auth[7:].strip()
+        hashed = token_hash(raw)
         now = datetime.now(timezone.utc)
         with connect() as conn:
             row = conn.execute(
                 """SELECT api_tokens.*, users.username, users.status user_status
                    FROM api_tokens JOIN users ON users.id=api_tokens.user_id
                    WHERE token_hash=?""",
-                (token_hash(raw),),
+                (hashed,),
             ).fetchone()
-            if not row:
+            if row:
+                if datetime.fromisoformat(row["expires_at"]) <= now:
+                    conn.execute("DELETE FROM api_tokens WHERE id=?", (row["id"],))
+                    conn.commit()
+                    return response_error("TOKEN_EXPIRED", "登录已过期", 401)
+                if row["user_status"] != "active":
+                    conn.execute("DELETE FROM api_tokens WHERE user_id=?", (row["user_id"],))
+                    conn.commit()
+                    return response_error("ACCOUNT_DISABLED", "账户已停用", 403)
+                conn.execute("UPDATE api_tokens SET last_used_at=? WHERE id=?", (utcnow(), row["id"]))
+                conn.commit()
+                g.user = {"id": row["user_id"], "username": row["username"], "token": raw, "role": "user"}
+                return view(*args, **kwargs)
+
+            admin = conn.execute(
+                """SELECT admin_api_tokens.*, admins.username
+                   FROM admin_api_tokens JOIN admins ON admins.id=admin_api_tokens.admin_id
+                   WHERE token_hash=?""",
+                (hashed,),
+            ).fetchone()
+            if not admin:
                 return response_error("UNAUTHORIZED", "登录状态已失效", 401)
-            if datetime.fromisoformat(row["expires_at"]) <= now:
-                conn.execute("DELETE FROM api_tokens WHERE id=?", (row["id"],))
+            if datetime.fromisoformat(admin["expires_at"]) <= now:
+                conn.execute("DELETE FROM admin_api_tokens WHERE id=?", (admin["id"],))
                 conn.commit()
                 return response_error("TOKEN_EXPIRED", "登录已过期", 401)
-            if row["user_status"] != "active":
-                conn.execute("DELETE FROM api_tokens WHERE user_id=?", (row["user_id"],))
-                conn.commit()
-                return response_error("ACCOUNT_DISABLED", "账户已停用", 403)
-            conn.execute("UPDATE api_tokens SET last_used_at=? WHERE id=?", (utcnow(), row["id"]))
+            conn.execute("UPDATE admin_api_tokens SET last_used_at=? WHERE id=?", (utcnow(), admin["id"]))
             conn.commit()
-        g.user = {"id": row["user_id"], "username": row["username"], "token": raw}
+            g.user = {"id": admin["admin_id"], "username": admin["username"], "token": raw, "role": "admin"}
         return view(*args, **kwargs)
     return wrapped
 
@@ -146,6 +176,10 @@ def api_index():
         "registration_enabled": bool(current_app.config.get("REGISTRATION_ENABLED", True)),
         "token_days": int(current_app.config.get("TOKEN_DAYS", 30)),
         "app_api_ready": True,
+        "traffic_reporting": True,
+        "traffic_report_interval_seconds": 300,
+        "traffic_report_requires_node_id": True,
+        "panel_timezone": current_app.config.get("PANEL_TIMEZONE", "UTC"),
     }
 
 
@@ -180,7 +214,7 @@ def register():
         ):
             _rate_fail("register", "invite", max_attempts=20, window_seconds=900, block_seconds=900, conn=conn)
             return response_error("INVALID_INVITE", "邀请码无效、已作废或使用次数已用完", 403)
-        if conn.execute("SELECT 1 FROM users WHERE username=? COLLATE NOCASE", (username,)).fetchone():
+        if conn.execute("SELECT 1 FROM users WHERE username=? COLLATE NOCASE", (username,)).fetchone() or conn.execute("SELECT 1 FROM admins WHERE username=? COLLATE NOCASE", (username,)).fetchone():
             return response_error("USERNAME_EXISTS", "用户名已存在", 409)
         cur = conn.execute(
             "INSERT INTO users(username,password_hash,status,invite_id,created_at) VALUES(?,?,?,?,?)",
@@ -206,22 +240,29 @@ def login():
     if retry_after:
         return jsonify({"ok": False, "code": "RATE_LIMITED", "message": "登录尝试过多，请稍后再试", "retry_after": retry_after}), 429
     with connect() as conn:
+        admin = conn.execute("SELECT * FROM admins WHERE username=? COLLATE NOCASE", (username,)).fetchone()
         user = conn.execute("SELECT * FROM users WHERE username=? COLLATE NOCASE", (username,)).fetchone()
-        if not user or not check_password_hash(user["password_hash"], password):
+        if admin and check_password_hash(admin["password_hash"], password):
+            raw, expires = _issue_admin_token(conn, admin["id"])
+            principal = {"id": admin["id"], "username": admin["username"], "role": "admin"}
+            conn.commit()
+        elif user and check_password_hash(user["password_hash"], password):
+            if user["status"] != "active":
+                return response_error("ACCOUNT_DISABLED", "账户已停用", 403)
+            raw, expires = _issue_token(conn, user["id"])
+            conn.execute("UPDATE users SET last_login_at=? WHERE id=?", (utcnow(), user["id"]))
+            principal = {"id": user["id"], "username": user["username"], "role": "user"}
+            conn.commit()
+        else:
             _rate_fail("login", username, max_attempts=10, window_seconds=900, block_seconds=900)
             return response_error("INVALID_CREDENTIALS", "用户名或密码错误", 401)
-        if user["status"] != "active":
-            return response_error("ACCOUNT_DISABLED", "账户已停用", 403)
-        raw, expires = _issue_token(conn, user["id"])
-        conn.execute("UPDATE users SET last_login_at=? WHERE id=?", (utcnow(), user["id"]))
-        conn.commit()
     _rate_reset("login", username)
     return jsonify(
         {
             "ok": True,
             "token": raw,
             "expires_at": expires.isoformat(timespec="seconds"),
-            "user": {"id": user["id"], "username": user["username"]},
+            "user": principal,
         }
     )
 
@@ -230,7 +271,8 @@ def login():
 @bearer_required
 def logout():
     with connect() as conn:
-        conn.execute("DELETE FROM api_tokens WHERE token_hash=?", (token_hash(g.user["token"]),))
+        table = "admin_api_tokens" if g.user.get("role") == "admin" else "api_tokens"
+        conn.execute(f"DELETE FROM {table} WHERE token_hash=?", (token_hash(g.user["token"]),))
         conn.commit()
     return {"ok": True}
 
@@ -238,7 +280,7 @@ def logout():
 @api_bp.get("/me")
 @bearer_required
 def me():
-    return {"ok": True, "user": {"id": g.user["id"], "username": g.user["username"], "status": "active"}}
+    return {"ok": True, "user": {"id": g.user["id"], "username": g.user["username"], "status": "active", "role": g.user.get("role", "user")}}
 
 
 @api_bp.post("/change-password")
@@ -252,15 +294,27 @@ def change_password():
     if current_password == new_password:
         return response_error("PASSWORD_UNCHANGED", "新密码不能与当前密码相同")
     with transaction() as conn:
-        user = conn.execute("SELECT * FROM users WHERE id=?", (g.user["id"],)).fetchone()
-        if not user or not check_password_hash(user["password_hash"], current_password):
-            return response_error("INVALID_CURRENT_PASSWORD", "当前密码错误", 401)
-        conn.execute(
-            "UPDATE users SET password_hash=?,password_changed_at=? WHERE id=?",
-            (generate_password_hash(new_password, method="scrypt"), utcnow(), user["id"]),
-        )
-        conn.execute("DELETE FROM api_tokens WHERE user_id=?", (user["id"],))
-        raw, expires = _issue_token(conn, user["id"])
+        if g.user.get("role") == "admin":
+            admin = conn.execute("SELECT * FROM admins WHERE id=?", (g.user["id"],)).fetchone()
+            if not admin or not check_password_hash(admin["password_hash"], current_password):
+                return response_error("INVALID_CURRENT_PASSWORD", "当前密码错误", 401)
+            next_version = int(admin["session_version"]) + 1
+            conn.execute(
+                "UPDATE admins SET password_hash=?,updated_at=?,session_version=? WHERE id=?",
+                (generate_password_hash(new_password, method="scrypt"), utcnow(), next_version, admin["id"]),
+            )
+            conn.execute("DELETE FROM admin_api_tokens WHERE admin_id=?", (admin["id"],))
+            raw, expires = _issue_admin_token(conn, admin["id"])
+        else:
+            user = conn.execute("SELECT * FROM users WHERE id=?", (g.user["id"],)).fetchone()
+            if not user or not check_password_hash(user["password_hash"], current_password):
+                return response_error("INVALID_CURRENT_PASSWORD", "当前密码错误", 401)
+            conn.execute(
+                "UPDATE users SET password_hash=?,password_changed_at=? WHERE id=?",
+                (generate_password_hash(new_password, method="scrypt"), utcnow(), user["id"]),
+            )
+            conn.execute("DELETE FROM api_tokens WHERE user_id=?", (user["id"],))
+            raw, expires = _issue_token(conn, user["id"])
     return jsonify(
         {
             "ok": True,
@@ -314,16 +368,177 @@ def _nodes_payload():
 @bearer_required
 def app_bootstrap():
     payload = _nodes_payload()
+    traffic = None
+    if g.user.get("role") == "user":
+        with connect() as conn:
+            traffic = traffic_summary(conn, g.user["id"], tz_name=current_app.config.get("PANEL_TIMEZONE", "UTC"))
     return jsonify({
         "ok": True,
         "api": "v1",
         "version": APP_VERSION,
         "server_time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "registration_enabled": bool(current_app.config.get("REGISTRATION_ENABLED", True)),
-        "user": {"id": g.user["id"], "username": g.user["username"], "status": "active"},
+        "traffic_reporting": True,
+        "traffic_report_interval_seconds": 300,
+        "traffic_report_requires_node_id": True,
+        "panel_timezone": current_app.config.get("PANEL_TIMEZONE", "UTC"),
+        "user": {"id": g.user["id"], "username": g.user["username"], "status": "active", "role": g.user.get("role", "user")},
+        "traffic": traffic,
         "nodes": {"countries": payload["countries"], "total": payload["total"]},
     })
 
+
+
+
+
+def _counter_value(data, key):
+    value = data.get(key)
+    if isinstance(value, bool):
+        raise ValueError
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        raise ValueError
+    # SQLite INTEGER is signed 64-bit. Reject absurd/corrupt counters instead of wrapping.
+    if value < 0 or value > 9_000_000_000_000_000_000:
+        raise ValueError
+    return value
+
+
+@api_bp.post("/traffic/report")
+@bearer_required
+def traffic_report():
+    """Accept cumulative Android counters and attribute server-calculated deltas to one node/session."""
+    if g.user.get("role") != "user":
+        return response_error("TRAFFIC_USER_REQUIRED", "管理员账户不计入用户流量统计", 403)
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return response_error("INVALID_JSON", "请求内容必须是 JSON")
+
+    device_id = str(data.get("device_id", "")).strip()
+    session_id = str(data.get("session_id", "")).strip()
+    app_version = str(data.get("app_version", "")).strip()[:64]
+    if len(device_id) < 8 or len(device_id) > 128:
+        return response_error("INVALID_DEVICE_ID", "device_id 长度需为 8-128 位")
+    if len(session_id) < 8 or len(session_id) > 128:
+        return response_error("INVALID_SESSION_ID", "session_id 长度需为 8-128 位")
+    if any(ord(ch) < 32 for ch in device_id + session_id):
+        return response_error("INVALID_DEVICE_ID", "设备或会话标识格式无效")
+    node_raw = data.get("node_id")
+    if isinstance(node_raw, bool):
+        return response_error("INVALID_NODE_ID", "node_id 必须是节点列表返回的整数 ID")
+    try:
+        node_id = int(node_raw)
+    except (TypeError, ValueError):
+        return response_error("INVALID_NODE_ID", "node_id 必须是节点列表返回的整数 ID")
+    if node_id <= 0:
+        return response_error("INVALID_NODE_ID", "node_id 必须是节点列表返回的整数 ID")
+    try:
+        upload_total = _counter_value(data, "upload_total_bytes")
+        download_total = _counter_value(data, "download_total_bytes")
+    except ValueError:
+        return response_error("INVALID_COUNTER", "流量累计值必须是非负整数")
+
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat(timespec="seconds")
+    day, _ = traffic_period_keys(now, current_app.config.get("PANEL_TIMEZONE", "UTC"))
+    stale_before = (now - timedelta(days=180)).isoformat(timespec="seconds")
+    baseline_reset = False
+    with transaction() as conn:
+        node = conn.execute(
+            "SELECT id,name,country,region FROM nodes WHERE id=?",
+            (node_id,),
+        ).fetchone()
+        if not node:
+            return response_error("INVALID_NODE_ID", "节点不存在，请先刷新节点列表", 400)
+
+        # Device baselines are operational state, not billing history. Remove long-dead
+        # installs so repeated App reinstalls cannot grow this table forever.
+        conn.execute("DELETE FROM traffic_device_counters WHERE last_report_at<?", (stale_before,))
+        row = conn.execute(
+            "SELECT * FROM traffic_device_counters WHERE user_id=? AND device_id=?",
+            (g.user["id"], device_id),
+        ).fetchone()
+        if not row:
+            # Android should report once immediately after the VPN session starts,
+            # normally with counters near zero. The first report is only a baseline.
+            delta_upload = 0
+            delta_download = 0
+            baseline_reset = True
+            conn.execute(
+                """INSERT INTO traffic_device_counters(
+                       user_id,device_id,session_id,node_id,upload_total_bytes,download_total_bytes,app_version,last_report_at
+                   ) VALUES(?,?,?,?,?,?,?,?)""",
+                (g.user["id"], device_id, session_id, node_id, upload_total, download_total, app_version, now_iso),
+            )
+        else:
+            same_stream = row["session_id"] == session_id and int(row["node_id"] or 0) == node_id
+            monotonic = upload_total >= int(row["upload_total_bytes"]) and download_total >= int(row["download_total_bytes"])
+            if same_stream and monotonic:
+                delta_upload = upload_total - int(row["upload_total_bytes"])
+                delta_download = download_total - int(row["download_total_bytes"])
+            else:
+                # Node switch, new VPN session, App/Core restart or counter rollback: begin
+                # a fresh baseline instead of assigning old-node bytes to the new node.
+                delta_upload = 0
+                delta_download = 0
+                baseline_reset = True
+            conn.execute(
+                """UPDATE traffic_device_counters
+                   SET session_id=?,node_id=?,upload_total_bytes=?,download_total_bytes=?,app_version=?,last_report_at=?
+                   WHERE user_id=? AND device_id=?""",
+                (session_id, node_id, upload_total, download_total, app_version, now_iso, g.user["id"], device_id),
+            )
+
+        conn.execute(
+            """INSERT INTO traffic_daily(user_id,day,upload_bytes,download_bytes,report_count,updated_at)
+               VALUES(?,?,?,?,1,?)
+               ON CONFLICT(user_id,day) DO UPDATE SET
+                   upload_bytes=traffic_daily.upload_bytes+excluded.upload_bytes,
+                   download_bytes=traffic_daily.download_bytes+excluded.download_bytes,
+                   report_count=traffic_daily.report_count+1,
+                   updated_at=excluded.updated_at""",
+            (g.user["id"], day, delta_upload, delta_download, now_iso),
+        )
+        conn.execute(
+            """INSERT INTO traffic_node_daily(
+                   user_id,node_id,day,node_name,country,region,upload_bytes,download_bytes,report_count,updated_at
+               ) VALUES(?,?,?,?,?,?,?,?,1,?)
+               ON CONFLICT(user_id,node_id,day) DO UPDATE SET
+                   node_name=excluded.node_name,
+                   country=excluded.country,
+                   region=excluded.region,
+                   upload_bytes=traffic_node_daily.upload_bytes+excluded.upload_bytes,
+                   download_bytes=traffic_node_daily.download_bytes+excluded.download_bytes,
+                   report_count=traffic_node_daily.report_count+1,
+                   updated_at=excluded.updated_at""",
+            (
+                g.user["id"], node_id, day, node["name"], node["country"], node["region"],
+                delta_upload, delta_download, now_iso,
+            ),
+        )
+        summary = traffic_summary(conn, g.user["id"], now=now, tz_name=current_app.config.get("PANEL_TIMEZONE", "UTC"))
+
+    return jsonify({
+        "ok": True,
+        "accepted": True,
+        "baseline_reset": baseline_reset,
+        "server_time": now_iso,
+        "node": {"id": node_id, "name": node["name"]},
+        "delta": {"upload_bytes": delta_upload, "download_bytes": delta_download},
+        "traffic": summary,
+    })
+
+
+@api_bp.get("/traffic/summary")
+@bearer_required
+def traffic_summary_api():
+    if g.user.get("role") != "user":
+        return response_error("TRAFFIC_USER_REQUIRED", "管理员账户不计入用户流量统计", 403)
+    with connect() as conn:
+        summary = traffic_summary(conn, g.user["id"], tz_name=current_app.config.get("PANEL_TIMEZONE", "UTC"))
+    return jsonify({"ok": True, "traffic": summary})
 
 
 @api_bp.get("/nodes")
