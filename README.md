@@ -40,15 +40,16 @@ vpn update v1.0.0
 
 ## 管理命令
 
-```bash
-vpn
-vpn check
-vpn update
-vpn domain
-vpn status
-vpn restart
-vpn logs
-vpn password
-```
+| 命令 | 作用 |
+|---|---|
+| `vpn` | 打开中文管理菜单 |
+| `vpn check` | 检查 GitHub 是否有新版本 |
+| `vpn update` | 更新到最新版本 |
+| `vpn update v1.0.0` | 安装 / 更新到指定版本 |
+| `vpn domain` | 配置或更换域名并管理 HTTPS |
+| `vpn status` | 查看 Panel 服务状态 |
+| `vpn restart` | 重启 Panel 服务 |
+| `vpn logs` | 查看 Panel 实时日志 |
+| `vpn password` | 重置 `admin` 管理员密码 |
 
 Android 接口见 `APP_API.md` / `APP_API_OPENAPI.yaml`，GitHub 更新说明见 `GITHUB_UPDATE.md`。
