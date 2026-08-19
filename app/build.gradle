@@ -1,0 +1,79 @@
+plugins {
+    id 'com.android.application'
+}
+
+def releaseKeystoreFile = System.getenv('XVPN_KEYSTORE_FILE')
+def releaseStorePassword = System.getenv('XVPN_KEYSTORE_PASSWORD')
+def releaseKeyAlias = System.getenv('XVPN_KEY_ALIAS')
+def releaseKeyPassword = System.getenv('XVPN_KEY_PASSWORD')
+def isReleaseBuild = gradle.startParameter.taskNames.any { it.toLowerCase().contains('release') }
+
+if (isReleaseBuild && (!releaseKeystoreFile || !releaseStorePassword || !releaseKeyAlias || !releaseKeyPassword)) {
+    throw new GradleException('Release signing is not configured. Set XVPN_KEYSTORE_FILE, XVPN_KEYSTORE_PASSWORD, XVPN_KEY_ALIAS, and XVPN_KEY_PASSWORD.')
+}
+
+android {
+    namespace 'com.xvpn.android'
+    compileSdk 36
+
+    defaultConfig {
+        applicationId 'com.xvpn.android'
+        minSdk 26
+        targetSdk 36
+        versionCode 10018
+        versionName '1.0.1'
+        manifestPlaceholders = [usesCleartextTraffic: 'false']
+        // 1.0.1 remains arm64-only; the bundled libbox AAR is intentionally single-ABI.
+        ndk { abiFilters 'arm64-v8a' }
+    }
+
+    signingConfigs {
+        release {
+            if (releaseKeystoreFile) {
+                storeFile file(releaseKeystoreFile)
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            // Debug can be used with a temporary HTTP Panel during local development.
+            // Official GitHub test APKs are release-signed and HTTPS-only.
+            manifestPlaceholders = [usesCleartextTraffic: 'true']
+            applicationIdSuffix '.debug'
+            versionNameSuffix '-debug'
+        }
+        release {
+            signingConfig signingConfigs.release
+            minifyEnabled false
+            manifestPlaceholders = [usesCleartextTraffic: 'false']
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation files('libs/libbox-1.13.19-arm64.aar')
+    testImplementation 'junit:junit:4.13.2'
+    // Android's local-test stubs do not implement org.json. Keep a real JVM
+    // implementation test-only so protocol/config generation can be verified.
+    testImplementation 'org.json:json:20240303'
+}

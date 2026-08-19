@@ -1,19 +1,31 @@
-# XVPN Panel v1.2.1
+# XVPN Android 1.0.1
 
-本次正式版新增 Android App 更新控制中心，并继续收口更新策略与发布安全。
+1.0.0 的修复版，解决已连接时节点优选误判的问题。
 
-## 主要更新
+## 已连接状态的节点检测修复
 
-- 新增公开 `GET /api/v1/app/update`，Android 优先通过 Panel 获取更新信息。
-- Android APK 继续托管在独立 GitHub Release，Panel 不保存 APK 文件。
-- Android Release 仓库可在后台自定义，默认 `kkx999/XVPN-Android`。
-- 自动校验 APK 与 `SHA256SUMS.txt`，并解析 versionName / versionCode / Release Notes。
-- 新增“最低允许运行版本”历史 Release 下拉，不再需要手工填写 versionCode。
-- 历史正式版与测试版均展示；无法识别 versionCode 的版本禁用。
-- 高于当前 Latest Release 的历史测试版本仍展示但不可设为最低版本，避免客户端进入无法满足的强制更新循环。
-- 支持强制更新、最低版本策略、立即同步、Latest/历史 Release 缓存和 GitHub 临时异常时的陈旧缓存标记。
-- 修复缓存同步失败后状态被错误恢复为“正常”的逻辑问题，并对连续失败进行缓存节流。
-- 切换 Android 仓库时自动清除旧仓库缓存并重置最低版本策略。
-- Panel 自身更新继续严格使用 GitHub Latest Release + `SHA256SUMS.txt`，不从 main 分支安装生产代码。
+- 当前正在连接的节点改用真实 HTTPS 隧道健康检查，不再用裸 TCP 入口握手否定一个已实际可用的 VPN。
+- 已连接时“自动优选”改为“连接检测”：验证当前隧道，并展示其他候选节点的入口连通性；不再把当前隧道延迟与其他节点的入口 TCP 延迟混在一起排序后自动切换。
+- Android 部分机型会拒绝“已 protect 又显式绑定底层网络”的测速 Socket；候选入口测试现在会安全重试一次仅 protect 的 Socket，仍不会回流进当前 VPN。
+- 候选节点无法建立裸 TCP 时显示“入口不可达 / 入口超时 / 入口拒绝”，明确它只是入口测试结果，不等同于节点协议不可用。
 
-兼容：从 XVPN Panel v1.2.0 原地升级并保留现有数据库、节点、用户、邀请码、流量、备份、Telegram、域名与管理员配置。
+## 网络与稳定性
+
+- 智能分流按私网 / 本地、中国域名、中国 IP、最终代理的顺序匹配；全局模式仅保留局域网直连。
+- 国内域名使用直拨 AliDNS DoH，其他域名使用经代理的 Google DoH；DNS 仅返回 IPv4，TUN MTU 固定为 1400。
+- 拒绝网页 UDP/443，使 UDP 不可用节点上的 QUIC 请求立即回落 TCP/TLS；不会拦截 Core 自身的 Hysteria2 / TUIC 出口。
+- 连接和热切换在发布“已连接”前执行真实 HTTPS 健康检查；失败自动回滚原节点和原模式。
+- 支持 VLESS、Trojan、VMess、Shadowsocks、Hysteria2、TUIC、AnyTLS 分享配置及常见 TLS / REALITY / transport 参数。
+
+## 交互与系统集成
+
+- 已连接时可直接切换智能 / 全局、打开节点列表、手动切换或自动优选。
+- 自动优选最多四节点并发，使用物理网络测速，区分 DNS、超时、拒绝、IPv6-only 与不可达。
+- 连接球在已连接状态使用独立薄荷绿冰晶边缘；底部卡片、测速反馈、主题切换与深色模式统一短动效。
+- 前台通知显示节点、模式、连接时长、实时速率、健康状态与安全断开操作。
+- 默认 Panel 为 `https://xvpn.666101.xyz`；只自动迁移历史内置地址，不改写自定义地址。
+- Panel 更新接口故障时回退 GitHub Latest Release；服务端明确暂停更新时不绕过策略。
+
+## 发布要求
+
+GitHub Actions 会执行 14 份协议/分流配置生成测试、lint、签名构建、zipalign、APK v2 签名、包名/版本/ABI、单 DEX、规则资产和固定证书检查。创建 `v1.0.1` Release 前，仍须按 `QA_CHECKLIST.md` 在实际节点与 Android 真机上完成协议握手、分流、DNS、通知和长时间运行验收。
