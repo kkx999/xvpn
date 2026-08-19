@@ -1,0 +1,122 @@
+{% extends 'base.html' %}{% block heading %}节点管理{% endblock %}{% block subheading %}Panel 自动识别协议与原节点名称，你只需要决定 App 名称和国家分类{% endblock %}
+{% block content %}
+<div class="two-col">
+  <div class="panel-card">
+    <div class="card-head"><div><h2>添加单个节点</h2><p>国家代码、协议和原节点名称全部自动处理</p></div></div>
+    <form method="post" action="{{ url_for('admin.node_add') }}" class="form-grid" id="single-node-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label class="span-2">原始节点配置
+        <textarea name="config" rows="6" required placeholder="vless://...#原节点名&#10;hysteria2://...#原节点名&#10;trojan://...#原节点名"></textarea>
+        <small class="help-text">Panel 会自动识别协议和原节点名称，原始配置本身不会因为重命名而改变。</small>
+      </label>
+      <label>App 显示名称
+        <input name="name" id="single-display-name" placeholder="留空则沿用原节点名称">
+        <small class="help-text">这是 Android App 中实际显示的名称。</small>
+      </label>
+      <label>国家/地区
+        <select name="country_code" id="single-country-code" required>
+          {% for code, name in countries %}<option value="{{ code }}">{{ country_flag(code) }} {{ name }}</option>{% endfor %}
+        </select>
+        <small class="help-text">用于 App 的国旗和国家分组，国家代码自动保存。</small>
+      </label>
+      <label>排序
+        <input name="sort_order" type="number" value="100">
+      </label>
+      <div></div>
+      <button class="primary-btn span-2" type="submit">添加节点</button>
+    </form>
+  </div>
+
+  <div class="panel-card">
+    <div class="card-head"><div><h2>批量导入</h2><p>先解析预览，再逐条确认 App 显示名称</p></div></div>
+    <form method="post" action="{{ url_for('admin.node_batch') }}" class="form-grid">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label>国家/地区
+        <select name="country_code" required>
+          {% for code, name in countries %}<option value="{{ code }}">{{ country_flag(code) }} {{ name }}</option>{% endfor %}
+        </select>
+        <small class="help-text">本批节点统一归入这个国家分类。</small>
+      </label>
+      <label>命名方式
+        <select name="naming_mode" id="naming-mode">
+          <option value="original">沿用每条原节点名称</option>
+          <option value="sequence">统一名称 + 自动编号</option>
+        </select>
+      </label>
+      <label id="prefix-field" class="hidden-field">统一名称
+        <input name="name_prefix" placeholder="例如：香港">
+        <small class="help-text">5 条节点会生成 香港01、香港02、香港03…</small>
+      </label>
+      <label id="start-field" class="hidden-field">起始编号
+        <input name="start_number" type="number" min="0" value="1">
+      </label>
+      <label>排序起点
+        <input name="sort_order" type="number" value="100">
+        <small class="help-text">后续节点依次 +1。</small>
+      </label>
+      <div></div>
+      <label class="span-2">节点列表
+        <textarea name="configs" rows="9" required placeholder="一行一个节点：&#10;vless://...#Zouter-HK-01&#10;vless://...#Zouter-HK-02&#10;hysteria2://...#Zouter-HK-03"></textarea>
+        <small class="help-text">下一步会显示“原节点名称 / App 显示名称 / 协议”预览，App 名称还能逐条修改。</small>
+      </label>
+      <button class="soft-primary-btn span-2" type="submit">解析并预览</button>
+    </form>
+  </div>
+</div>
+
+<div class="panel-card">
+  <div class="card-head">
+    <div><h2>最近导入</h2><p>这里只展示最近 3 条；当前共 {{ total_nodes }} 个节点</p></div>
+    <a class="soft-btn" href="{{ url_for('admin.node_overview') }}">查看全部节点</a>
+  </div>
+  <div class="table-wrap"><table><thead><tr><th>App 显示名称</th><th>原节点名称</th><th>国家</th><th>协议详情</th><th>排序</th><th>状态</th><th>操作</th></tr></thead><tbody>
+  {% for n in nodes %}
+    <tr>
+      <td><strong>{{ n.name }}</strong></td>
+      <td><span class="original-name" title="{{ n.original_name }}">{{ n.original_name or '—' }}</span></td>
+      <td><span class="country-chip">{{ country_flag(n.country_code) }} {{ n.country }}</span></td>
+      <td><div class="protocol-stack">{% for detail in n.protocol_details %}<span class="badge {{ 'blue' if loop.first else 'soft' }}">{{ detail }}</span>{% endfor %}</div></td>
+      <td>{{ n.sort_order }}</td>
+      <td><span class="badge {{ 'green' if n.status=='enabled' else 'gray' }}">{{ '启用' if n.status=='enabled' else '停用' }}</span></td>
+      <td class="actions"><a class="action-btn edit" href="{{ url_for('admin.node_edit_page', node_id=n.id) }}">编辑</a><form method="post" action="{{ url_for('admin.node_toggle', node_id=n.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="action-btn {{ 'warning' if n.status=='enabled' else 'success' }}" {% if n.status=='enabled' %}data-confirm="停用后 App 下一次刷新节点列表时会立即隐藏这个节点。" data-confirm-title="停用 {{ n.name }}？" data-confirm-button="确认停用"{% endif %} type="submit">{{ '停用' if n.status=='enabled' else '启用' }}</button></form><form method="post" action="{{ url_for('admin.node_delete', node_id=n.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="action-btn danger" data-confirm="删除后此节点会立即从 App API 中消失，且无法从面板恢复。" data-confirm-title="删除 {{ n.name }}？" data-confirm-button="确认删除" type="submit">删除</button></form></td>
+    </tr>
+  {% else %}<tr><td colspan="7" class="empty">暂无节点</td></tr>{% endfor %}
+  </tbody></table></div>
+</div>
+<script>
+(() => {
+  const mode = document.getElementById('naming-mode');
+  const prefix = document.getElementById('prefix-field');
+  const start = document.getElementById('start-field');
+  function sync() {
+    const show = mode && mode.value === 'sequence';
+    prefix?.classList.toggle('hidden-field', !show);
+    start?.classList.toggle('hidden-field', !show);
+  }
+  mode?.addEventListener('change', sync); sync();
+})();
+
+// 仅做防手滑提醒：名称里明显写了另一个国家时，不阻止管理员继续保存。
+(() => {
+  const form = document.getElementById('single-node-form');
+  const nameInput = document.getElementById('single-display-name');
+  const countrySelect = document.getElementById('single-country-code');
+  const countryNames = {{ country_map|tojson }};
+  form?.addEventListener('submit', async (event) => {
+    if (form.dataset.webConfirmed === '1') { delete form.dataset.webConfirmed; return; }
+    const value = (nameInput?.value || '').trim();
+    if (!value) return;
+    const selected = countrySelect?.value || '';
+    const mismatch = Object.entries(countryNames).find(([code, label]) => code !== selected && label !== '其他' && value.includes(label));
+    if (!mismatch) return;
+    event.preventDefault();
+    const ok = await window.webConfirm({
+      titleText: '国家分类可能不一致',
+      messageText: `App 显示名称中包含“${mismatch[1]}”，但当前国家分类是“${countryNames[selected] || selected}”。\n\n这只是防手滑提醒，仍然可以继续添加。`,
+      buttonText: '仍然添加'
+    });
+    if (ok) { form.dataset.webConfirmed = '1'; form.requestSubmit(); }
+  });
+})();
+</script>
+{% endblock %}

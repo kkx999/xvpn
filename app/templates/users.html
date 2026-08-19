@@ -1,0 +1,48 @@
+{% extends 'base.html' %}
+{% block heading %}用户管理{% endblock %}
+{% block subheading %}管理邀请注册账户、流量统计、密码与登录状态{% endblock %}
+{% block content %}
+<div class="panel-card">
+  <div class="card-head"><div><h2>全部用户</h2><p>{{ total_users }} 个符合条件的账户 · 每页最多 {{ per_page }} 个</p></div><span class="badge blue">{{ panel_timezone }}</span></div>
+  <form method="get" class="list-filter-bar" aria-label="用户筛选">
+    <label>搜索用户名<input name="q" value="{{ query }}" maxlength="64" placeholder="输入用户名"></label>
+    <label>账户状态<select name="status"><option value="all" {% if status_filter=='all' %}selected{% endif %}>全部状态</option><option value="active" {% if status_filter=='active' %}selected{% endif %}>正常</option><option value="disabled" {% if status_filter=='disabled' %}selected{% endif %}>停用</option></select></label>
+    <div class="filter-actions"><button class="primary-btn" type="submit" data-loading-text="筛选中...">筛选</button>{% if query or status_filter!='all' %}<a class="soft-btn" href="{{ url_for('admin.users') }}">清除筛选</a>{% endif %}</div>
+  </form>
+  <div class="table-wrap"><table><thead><tr><th>用户</th><th>状态</th><th>邀请码</th><th>注册</th><th>最后登录</th><th>流量</th><th>密码管理</th><th>账户操作</th></tr></thead><tbody>
+  {% for u in users %}<tr>
+    <td><strong>{{ u.username }}</strong></td>
+    <td><span class="badge {{ 'green' if u.status=='active' else 'gray' }}">{{ '正常' if u.status=='active' else '停用' }}</span></td>
+    <td><code>{{ u.invite_code or '—' }}</code></td>
+    <td>{{ panel_time(u.created_at, True) }}</td>
+    <td>{{ panel_time(u.last_login_at, True) }}</td>
+    <td class="traffic-cell">
+      <strong>今日 {{ format_bytes(u.today_bytes) }}</strong>
+      <small>本月 {{ format_bytes(u.month_bytes) }} · 累计 {{ format_bytes(u.total_bytes) }}</small>
+      <small>最后上报 {{ panel_time(u.last_report_at, True) }}</small>
+      <a class="traffic-detail-link" href="{{ url_for('admin.user_traffic', user_id=u.id) }}">查看流量详情</a>
+    </td>
+    <td>
+      <div class="password-actions">
+        <form method="post" action="{{ url_for('admin.user_password', user_id=u.id) }}" class="inline-reset">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="return_q" value="{{ query }}"><input type="hidden" name="return_status" value="{{ status_filter }}"><input type="hidden" name="return_page" value="{{ page }}">
+          <input name="password" type="password" minlength="8" required placeholder="输入新密码">
+          <button class="action-btn edit" data-loading-text="设置中..." data-confirm="设置后旧密码和该用户现有登录状态会立即失效。" data-confirm-title="设置 {{ u.username }} 的新密码？" data-confirm-button="确认设置" type="submit">设置</button>
+        </form>
+        <form method="post" action="{{ url_for('admin.user_password_random', user_id=u.id) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="return_q" value="{{ query }}"><input type="hidden" name="return_status" value="{{ status_filter }}"><input type="hidden" name="return_page" value="{{ page }}">
+          <button class="action-btn neutral" data-loading-text="重置中..." data-confirm="系统会生成新的随机密码，并立即撤销该用户现有登录状态。新密码只显示一次。" data-confirm-title="随机重置 {{ u.username }} 的密码？" data-confirm-button="随机重置" type="submit">随机重置</button>
+        </form>
+      </div>
+    </td>
+    <td class="actions user-actions">
+      <form method="post" action="{{ url_for('admin.user_logout_all', user_id=u.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="return_q" value="{{ query }}"><input type="hidden" name="return_status" value="{{ status_filter }}"><input type="hidden" name="return_page" value="{{ page }}"><button class="action-btn neutral" data-loading-text="撤销中..." data-confirm="只撤销该用户当前所有 App 登录 Token，不修改密码、不停用账号。" data-confirm-title="退出 {{ u.username }} 的所有设备？" data-confirm-button="确认退出" type="submit">退出所有设备</button></form>
+      <form method="post" action="{{ url_for('admin.user_traffic_reset', user_id=u.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="return_q" value="{{ query }}"><input type="hidden" name="return_status" value="{{ status_filter }}"><input type="hidden" name="return_page" value="{{ page }}"><button class="action-btn warning" data-loading-text="重置中..." data-confirm-tone="danger" data-confirm="会永久清除该用户今日、本月、累计流量、节点流量归属以及设备去重基线。下一次 Android 上报只会重新建立基线，不会把旧累计值加回来。" data-confirm-title="重置 {{ u.username }} 的全部流量统计？" data-confirm-button="确认重置流量" type="submit">重置流量</button></form>
+      <form method="post" action="{{ url_for('admin.user_toggle', user_id=u.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="return_q" value="{{ query }}"><input type="hidden" name="return_status" value="{{ status_filter }}"><input type="hidden" name="return_page" value="{{ page }}"><button class="action-btn {{ 'warning' if u.status=='active' else 'success' }}" data-loading-text="处理中..." {% if u.status=='active' %}data-confirm="停用后该用户的现有登录状态会立即失效，并无法重新登录。" data-confirm-title="停用 {{ u.username }}？" data-confirm-button="确认停用"{% endif %} type="submit">{{ '停用' if u.status=='active' else '恢复' }}</button></form>
+      <form method="post" action="{{ url_for('admin.user_delete', user_id=u.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="return_q" value="{{ query }}"><input type="hidden" name="return_status" value="{{ status_filter }}"><input type="hidden" name="return_page" value="{{ page }}"><button class="action-btn danger" data-loading-text="删除中..." data-confirm="删除后该账户、登录 Token、流量统计和设备上报状态都会被移除，此操作不可撤销。" data-confirm-title="删除 {{ u.username }}？" data-confirm-button="确认删除" type="submit">删除</button></form>
+    </td>
+  </tr>{% else %}<tr><td colspan="8" class="empty">{% if query or status_filter!='all' %}没有符合当前筛选条件的用户{% else %}暂无用户{% endif %}</td></tr>{% endfor %}
+  </tbody></table></div>
+  {% if pages > 1 %}<div class="pager"><a class="soft-btn {% if page<=1 %}is-disabled{% endif %}" {% if page>1 %}href="{{ url_for('admin.users', q=query, status=status_filter, page=page-1) }}"{% endif %}>上一页</a><span>第 {{ page }} / {{ pages }} 页</span><a class="soft-btn {% if page>=pages %}is-disabled{% endif %}" {% if page<pages %}href="{{ url_for('admin.users', q=query, status=status_filter, page=page+1) }}"{% endif %}>下一页</a></div>{% endif %}
+</div>
+{% endblock %}
