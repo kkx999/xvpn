@@ -16,7 +16,7 @@ case "${1:-}" in
   "") ;;
   --version|-v) REQUESTED="${2:-}"; [[ -n "$REQUESTED" ]] || fail "缺少版本号。" ;;
   v*|[0-9]*) REQUESTED="$1" ;;
-  *) fail "用法：install-online.sh [--version v1.2.0]" ;;
+  *) fail "用法：install-online.sh [--version v1.2.1]" ;;
 esac
 
 if ! command -v curl >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1 || ! command -v sha256sum >/dev/null 2>&1; then
@@ -49,7 +49,7 @@ echo "========================================"
 
 RELEASE_JSON="$TMP/release.json"
 if [[ -n "$REQUESTED" ]]; then
-  valid_version "$REQUESTED" || fail "版本格式无效，例如 v1.2.0。"
+  valid_version "$REQUESTED" || fail "版本格式无效，例如 v1.2.1。"
   TARGET_VERSION="$(normalize_version "$REQUESTED")"
   TAG="v$TARGET_VERSION"
   info "正在获取正式版本：$TAG"

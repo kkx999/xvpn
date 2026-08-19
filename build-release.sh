@@ -38,6 +38,8 @@ PKG_VERSION="$(unzip -p "$OUT_DIR/$PKG" "xvpn-panel-${VERSION}/VERSION" | tr -d 
 [[ "$PKG_VERSION" == "$VERSION" ]] || { echo "发布包 VERSION 不一致" >&2; exit 1; }
 unzip -p "$OUT_DIR/$PKG" "xvpn-panel-${VERSION}/app/templates/dashboard.html" | grep -q '今日流量概览' || { echo "发布包缺少新版首页" >&2; exit 1; }
 unzip -p "$OUT_DIR/$PKG" "xvpn-panel-${VERSION}/install-online.sh" | grep -q 'releases/latest' || { echo "发布包更新器不是 Release 模式" >&2; exit 1; }
+unzip -p "$OUT_DIR/$PKG" "xvpn-panel-${VERSION}/app/templates/app_update.html" | grep -q '最低允许运行版本' || { echo "发布包缺少 App 最低版本下拉" >&2; exit 1; }
+unzip -p "$OUT_DIR/$PKG" "xvpn-panel-${VERSION}/app/app_updates.py" | grep -q 'minimum_reachable' || { echo "发布包缺少最低版本可达性保护" >&2; exit 1; }
 
 echo
 echo "发布资产已生成："

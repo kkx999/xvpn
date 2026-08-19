@@ -18,7 +18,7 @@ valid_domain(){ [[ "$1" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$ 
 
 clear || true
 say "${C_BOLD}${C_BLUE}XVPN Panel 域名 / HTTPS${C_RESET}"
-say "────────────────────────────────────────"
+say "----------------------------------------"
 OLD_DOMAIN="$(current_domain)"
 if [[ -n "$OLD_DOMAIN" ]]; then
   say "当前域名：${C_CYAN}$OLD_DOMAIN${C_RESET}"
@@ -26,7 +26,7 @@ if [[ -n "$OLD_DOMAIN" ]]; then
 else
   say "当前域名：${C_YELLOW}未配置${C_RESET}"
 fi
-say "────────────────────────────────────────"
+say "----------------------------------------"
 echo
 read -r -p "是否现在配置/更换域名并申请 HTTPS？ [y/N]: " go
 [[ "${go,,}" == "y" || "${go,,}" == "yes" ]] || { warn "已取消，没有修改任何配置。"; exit 0; }
@@ -49,7 +49,7 @@ if [[ "${cf,,}" == "y" || "${cf,,}" == "yes" ]]; then USE_CF=1; fi
 
 echo
 say "${C_BOLD}请先确认 DNS：${C_RESET}"
-say "  A 记录：${C_CYAN}$DOMAIN${C_RESET}  →  ${C_CYAN}${PUBLIC_IP:-本机公网 IP}${C_RESET}"
+say "  A 记录：${C_CYAN}$DOMAIN${C_RESET}  ->  ${C_CYAN}${PUBLIC_IP:-本机公网 IP}${C_RESET}"
 if [[ "$USE_CF" == "1" ]]; then
   say "  Cloudflare：${C_GREEN}小云朵可以开启${C_RESET}"
   say "  证书成功后：SSL/TLS 建议使用 ${C_BOLD}Full (strict)${C_RESET}"

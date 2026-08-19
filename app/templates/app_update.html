@@ -1,0 +1,142 @@
+{% extends 'base.html' %}
+{% block heading %}App 更新{% endblock %}
+{% block subheading %}Android 安装包继续托管在 GitHub Release，Panel 负责版本同步、校验与更新策略{% endblock %}
+{% block content %}
+<section class="panel-card app-update-hero">
+  <div class="app-update-hero-main">
+    <div>
+      <span class="app-update-kicker">XVPN Android</span>
+      <h2>{{ app_release.tag if app_release else '尚未同步' }}</h2>
+      <p>仓库 {{ android_repository }} · 正式客户端每 {{ (check_interval_seconds / 3600)|int }} 小时静默检查一次</p>
+    </div>
+    <div class="app-update-hero-actions">
+      <span class="badge {{ 'green' if app_release and not release_result.stale else 'warning' }}">
+        {% if app_release and not release_result.stale %}同步正常{% elif app_release %}使用缓存{% else %}等待同步{% endif %}
+      </span>
+      <form method="post" action="{{ url_for('admin.app_update_refresh') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button class="secondary-btn" type="submit" data-loading-text="同步中...">立即同步</button>
+      </form>
+    </div>
+  </div>
+  <div class="app-update-flow" aria-label="App 更新流程">
+    <span>发布 APK</span><b>→</b><span>GitHub Latest Release</span><b>→</b><span>Panel 校验</span><b>→</b><span>Android 提示更新</span>
+  </div>
+</section>
+
+<div class="app-update-grid">
+  <section class="panel-card app-release-card">
+    <div class="card-head">
+      <div><h2>Latest Release</h2><p>Panel 每 {{ (cache_seconds / 60)|int }} 分钟最多向 GitHub 刷新一次，所有 Android 客户端只请求 Panel。</p></div>
+      {% if app_release %}<a class="secondary-btn app-release-link" href="{{ app_release.release_url }}" target="_blank" rel="noopener">查看 Release</a>{% endif %}
+    </div>
+
+    {% if app_release %}
+    <div class="app-release-metrics">
+      <div><span>版本</span><strong>{{ app_release.version_name }}</strong><small>{{ app_release.tag }}</small></div>
+      <div><span>versionCode</span><strong>{{ app_release.version_code if app_release.version_code else '—' }}</strong><small>{{ '已自动读取' if app_release.version_code else '未从 Release / 源码识别' }}</small></div>
+      <div><span>APK</span><strong class="app-file-name">{{ app_release.apk_name }}</strong><small>{{ (app_release.apk_size / 1024 / 1024)|round(2) }} MB</small></div>
+    </div>
+    <div class="app-sha-row">
+      <div><span>SHA-256</span><code>{{ app_release.sha256 }}</code></div>
+      <span class="badge green">已匹配 SHA256SUMS.txt</span>
+    </div>
+    <div class="app-update-meta">
+      <span><small>发布时间</small><strong>{{ panel_time(app_release.published_at, true) }}</strong></span>
+      <span><small>最后检查</small><strong>{{ panel_time(release_result.checked_at, true) }}</strong></span>
+      <span><small>数据来源</small><strong>Latest Release</strong></span>
+    </div>
+    {% if release_result.stale %}
+    <div class="backup-warning app-update-warning">GitHub 本次同步失败，当前 API 正在继续使用上一次成功缓存，不会向客户端返回半成品版本信息。</div>
+    {% endif %}
+    {% if app_release.release_notes %}
+    <details class="app-release-notes">
+      <summary>查看更新说明</summary>
+      <pre>{{ app_release.release_notes }}</pre>
+    </details>
+    {% endif %}
+    {% else %}
+    <div class="traffic-empty-state app-update-empty">
+      <div class="traffic-empty-mark">A</div>
+      <strong>尚未取得可用的 Android Release</strong>
+      <p>{{ release_result.error if release_result and release_result.error else settings_values.app_update_last_status }}。请确认 Latest Release 同时包含 APK 与 SHA256SUMS.txt。</p>
+    </div>
+    {% endif %}
+  </section>
+
+  <section class="panel-card app-policy-card">
+    <div class="card-head"><div><h2>更新策略</h2><p>这里只控制更新行为，不上传也不保存 APK。</p></div><span class="badge blue">Panel 控制</span></div>
+    <form method="post" action="{{ url_for('admin.app_update_settings') }}" class="app-policy-form" id="app-update-policy-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label class="app-policy-number app-policy-repository">Android Release 仓库
+        <input type="text" name="app_update_repository" value="{{ settings_values.app_update_repository or 'kkx999/XVPN-Android' }}" placeholder="owner/repo" autocomplete="off" spellcheck="false" required>
+        <small>默认 kkx999/XVPN-Android，可改成其他 GitHub 仓库。格式为 owner/repo；更换后会自动清除旧仓库缓存并重新同步。</small>
+      </label>
+      <div class="switch-setting">
+        <div><strong>自动跟随 Latest Release</strong><small>开启后，Android 优先通过 Panel 获取最新正式版本。</small></div>
+        <label class="ios-switch" aria-label="自动跟随 Latest Release"><input class="switch-input" id="app-update-enabled" type="checkbox" name="app_update_enabled" value="1" {% if settings_values.app_update_enabled == '1' %}checked{% endif %}><span class="switch-track"><span class="switch-thumb"></span></span></label>
+      </div>
+      <div class="switch-setting">
+        <div><strong>强制更新</strong><small>仅在检测到新版本时生效。普通版本建议保持关闭。</small></div>
+        <label class="ios-switch" aria-label="强制更新"><input class="switch-input" id="app-update-force" type="checkbox" name="app_update_force" value="1" {% if settings_values.app_update_force == '1' %}checked{% endif %}><span class="switch-track"><span class="switch-thumb"></span></span></label>
+      </div>
+      <label class="app-policy-number app-version-policy">
+        <span class="app-version-policy-head"><span>最低允许运行版本</span>{% if app_release and app_release.version_code %}<button type="button" class="app-version-latest" data-latest-code="{{ app_release.version_code }}">设为当前最新版</button>{% endif %}</span>
+        <select id="app-update-min-version" name="app_update_min_version_code" required>
+          <option value="0" {% if current_min_version_code == 0 %}selected{% endif %}>不限制</option>
+          {% if current_min_version_code and not min_code_in_history %}
+          <option value="{{ current_min_version_code }}" selected>当前设置（versionCode {{ current_min_version_code }}）</option>
+          {% endif %}
+          {% for item in history_releases %}
+          <option value="{{ item.version_code }}" {% if not item.policy_selectable %}disabled{% endif %} {% if item.policy_selectable and item.version_code == current_min_version_code %}selected{% endif %}>{{ item.version_name }}（{{ 'versionCode ' ~ item.version_code if item.version_code else 'versionCode 未识别' }}）{{ ' · 测试版' if item.prerelease else ' · 正式版' }}{% if app_release and item.tag == app_release.tag %} · 当前 Latest{% endif %}{% if item.above_latest %} · 高于当前 Latest，暂不可选{% endif %}</option>
+          {% endfor %}
+        </select>
+        <small id="app-version-policy-help">选择某个版本后，该版本及更高 versionCode 允许运行；更低版本会被标记为必须更新。下拉展示仓库中的历史 App Release，最新在前；高于当前 Latest 的测试版本仍展示，但为避免客户端无法更新到目标版本会暂时禁用。</small>
+        {% if history_result and history_result.ok %}
+        <small class="app-version-history-status">已读取 {{ history_releases|length }} 个历史 Release{% if history_result.stale %}（当前使用缓存）{% endif %}{% if history_result.skipped %}；另有 {{ history_result.skipped }} 个缺少 APK / SHA256SUMS.txt 的 Release 已忽略{% endif %}{% if history_result.truncated %}；历史记录过多，仅展示最近 1000 个{% endif %}。</small>
+        {% elif history_result %}
+        <small class="app-version-history-status warning-text">历史版本暂时无法同步：{{ history_result.error }}。点击“立即同步”可重试。</small>
+        {% endif %}
+      </label>
+      <div class="info-note app-policy-note">推荐流程：Android 编译完成 → GitHub 创建正式 Release → 上传 APK 与 SHA256SUMS.txt → Panel 自动同步。无需把 APK 上传到 Panel。</div>
+      <div class="form-actions"><button class="primary-btn" type="submit" data-loading-text="保存中...">保存更新策略</button></div>
+    </form>
+  </section>
+</div>
+
+<section class="panel-card app-update-api-card">
+  <div class="card-head"><div><h2>Android 接口</h2><p>公开版本元数据接口，不需要登录 Token；不返回用户、节点或管理数据。</p></div><span class="badge green">API v1</span></div>
+  <div class="app-api-endpoint"><code>GET /api/v1/app/update?version_name=0.1.0&amp;version_code=10009</code></div>
+  <div class="app-update-api-points">
+    <span><strong>优先级</strong><small>Android 先请求 Panel，Panel 不可用时再走 GitHub fallback。</small></span>
+    <span><strong>校验</strong><small>Panel 只接受带 APK + SHA256SUMS.txt 的完整 Latest Release。</small></span>
+    <span><strong>缓存</strong><small>GitHub 临时异常时继续返回最后一次成功快照，并标记 stale。</small></span>
+  </div>
+</section>
+
+<script>
+(() => {
+  const enabled = document.getElementById('app-update-enabled');
+  const force = document.getElementById('app-update-force');
+  const minVersion = document.getElementById('app-update-min-version');
+  const latestButton = document.querySelector('.app-version-latest');
+  const policyHelp = document.getElementById('app-version-policy-help');
+  latestButton?.addEventListener('click', () => {
+    const code = latestButton.dataset.latestCode || '';
+    if (!minVersion || !code) return;
+    const option = Array.from(minVersion.options).find((item) => item.value === code && !item.disabled);
+    if (!option) return;
+    minVersion.value = code;
+    minVersion.focus();
+    if (policyHelp) policyHelp.textContent = `已选择当前最新版（versionCode ${code}）。保存后，低于该版本的客户端会被要求更新。`;
+  });
+  const sync = () => {
+    if (!enabled || !force) return;
+    force.disabled = !enabled.checked;
+    force.closest('.switch-setting')?.classList.toggle('is-disabled', !enabled.checked);
+  };
+  enabled?.addEventListener('change', sync);
+  sync();
+})();
+</script>
+{% endblock %}

@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: XVPN Panel Android App API
-  version: 1.2.0
+  version: 1.2.1
   description: Invitation-only Android VPN client API. Native App uses Bearer tokens only.
 servers:
   - url: https://panel.example.com/api/v1
@@ -17,6 +17,23 @@ paths:
       summary: Health check
       responses:
         '200': {description: Healthy}
+  /app/update:
+    get:
+      summary: Public Android App update metadata
+      description: Reads the configured Android GitHub Latest Release through Panel cache. No bearer token required.
+      parameters:
+        - in: query
+          name: version_name
+          schema: {type: string}
+          required: false
+        - in: query
+          name: version_code
+          schema: {type: integer, minimum: 0}
+          required: false
+      responses:
+        '200': {description: Latest App release metadata and update policy}
+        '400': {description: Invalid version_code}
+        '503': {description: No valid cached release and GitHub source unavailable}
   /register:
     post:
       summary: Register with invite code

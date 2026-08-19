@@ -260,6 +260,19 @@ def _migrate(conn):
         "backup_last_run_at": "",
         "backup_last_status": "尚未执行自动备份",
         "telegram_last_status": "尚未发送",
+        "app_update_repository": "kkx999/XVPN-Android",
+        "app_update_enabled": "1",
+        "app_update_force": "0",
+        "app_update_min_version_code": "0",
+        "app_update_last_checked_at": "",
+        "app_update_last_status": "尚未同步 Android Release",
+        "app_update_last_snapshot_json": "",
+        "app_update_last_stale": "0",
+        "app_update_last_warning": "",
+        "app_update_history_checked_at": "",
+        "app_update_release_history_json": "",
+        "app_update_history_stale": "0",
+        "app_update_history_warning": "",
     }
     had_panel_timezone = conn.execute("SELECT 1 FROM system_settings WHERE key='panel_timezone'").fetchone() is not None
     for key, value in defaults.items():

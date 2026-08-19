@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import json
+import re
 import secrets
 import string
 from datetime import datetime, timedelta, timezone
@@ -20,6 +21,7 @@ from .telegram_client import test_connection as telegram_test_connection
 from .version import APP_VERSION
 from .event_log import clear_events, list_events, log_event
 from .traffic import format_bytes, mask_device_id, traffic_period_keys, traffic_summary
+from .app_updates import CACHE_SECONDS, CHECK_INTERVAL_SECONDS, get_app_release, get_release_history
 
 admin_bp = Blueprint("admin", __name__, template_folder="templates", static_folder="static")
 
@@ -1080,6 +1082,129 @@ def invite_delete(invite_id):
         conn.execute("DELETE FROM invites WHERE id=?", (invite_id,))
     flash("邀请码记录已删除；已注册用户不受影响", "success")
     return _invites_redirect()
+
+
+@admin_bp.get("/app-update")
+@admin_required
+def app_update_admin():
+    values = get_settings()
+    release_result = get_app_release(current_app)
+    snapshot = release_result.get("snapshot") if release_result else None
+    history_result = get_release_history(current_app)
+    history_releases = history_result.get("releases", []) if history_result else []
+    try:
+        current_min_version_code = max(0, int(values.get("app_update_min_version_code", "0") or 0))
+    except (TypeError, ValueError):
+        current_min_version_code = 0
+    latest_version_code = int(snapshot.get("version_code") or 0) if snapshot else 0
+    for item in history_releases:
+        code = int(item.get("version_code") or 0)
+        item["policy_selectable"] = bool(item.get("selectable") and latest_version_code and code <= latest_version_code)
+        item["above_latest"] = bool(item.get("selectable") and latest_version_code and code > latest_version_code)
+    min_code_in_history = any(
+        int(item.get("version_code") or 0) == current_min_version_code
+        for item in history_releases
+        if item.get("policy_selectable")
+    )
+    return render_template(
+        "app_update.html",
+        settings_values=values,
+        release_result=release_result,
+        app_release=snapshot,
+        android_repository=values.get("app_update_repository", "kkx999/XVPN-Android"),
+        history_result=history_result,
+        history_releases=history_releases,
+        current_min_version_code=current_min_version_code,
+        min_code_in_history=min_code_in_history,
+        cache_seconds=CACHE_SECONDS,
+        check_interval_seconds=CHECK_INTERVAL_SECONDS,
+    )
+
+
+@admin_bp.post("/app-update/settings")
+@admin_required
+def app_update_settings():
+    if not require_csrf():
+        return "CSRF validation failed", 400
+    repository = (request.form.get("app_update_repository") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+        flash("Android Release 仓库格式应为 owner/repo，例如 kkx999/XVPN-Android", "error")
+        return redirect(url_for("admin.app_update_admin"))
+    try:
+        min_version_code = int(request.form.get("app_update_min_version_code", "0") or 0)
+    except ValueError:
+        min_version_code = -1
+    if min_version_code < 0 or min_version_code > 2147483647:
+        flash("最低允许运行版本参数无效，请从下拉列表重新选择", "error")
+        return redirect(url_for("admin.app_update_admin"))
+    enabled = "1" if request.form.get("app_update_enabled") == "1" else "0"
+    force_update = "1" if request.form.get("app_update_force") == "1" else "0"
+    current_values = get_settings()
+    repository_changed = repository != (current_values.get("app_update_repository") or "kkx999/XVPN-Android")
+    if not repository_changed and min_version_code:
+        release_result = get_app_release(current_app)
+        history_result = get_release_history(current_app)
+        latest = release_result.get("snapshot") if release_result and release_result.get("ok") else None
+        latest_code = int(latest.get("version_code") or 0) if latest else 0
+        allowed_codes = {
+            int(item.get("version_code") or 0)
+            for item in (history_result.get("releases", []) if history_result and history_result.get("ok") else [])
+            if item.get("selectable") and int(item.get("version_code") or 0) > 0 and latest_code and int(item.get("version_code") or 0) <= latest_code
+        }
+        old_min = max(0, int(current_values.get("app_update_min_version_code", "0") or 0))
+        if min_version_code not in allowed_codes and min_version_code != old_min:
+            flash("最低允许运行版本必须从当前可用历史版本中选择，且不能高于当前 Latest Release", "error")
+            return redirect(url_for("admin.app_update_admin"))
+    updates = {
+        "app_update_repository": repository,
+        "app_update_enabled": enabled,
+        "app_update_force": force_update,
+        "app_update_min_version_code": str(min_version_code),
+    }
+    if repository_changed:
+        # A repository switch must never keep serving the old repository snapshot
+        # or reuse a minimum versionCode that belonged to another Android app line.
+        updates.update({
+            "app_update_min_version_code": "0",
+            "app_update_last_checked_at": "",
+            "app_update_last_status": "仓库已更改，等待同步 Latest Release",
+            "app_update_last_snapshot_json": "",
+            "app_update_last_stale": "0",
+            "app_update_last_warning": "",
+            "app_update_history_checked_at": "",
+            "app_update_release_history_json": "",
+            "app_update_history_stale": "0",
+            "app_update_history_warning": "",
+        })
+    set_settings(updates)
+    effective_min = 0 if repository_changed else min_version_code
+    log_event("app_update", "info", f"App 更新策略已保存：repository={repository}, enabled={enabled}, force={force_update}, min_version_code={effective_min}")
+    flash("App 更新策略已保存" + ("，仓库已切换、旧缓存已清除，最低运行版本已重置为不限制" if repository_changed else ""), "success")
+    return redirect(url_for("admin.app_update_admin"))
+
+
+@admin_bp.post("/app-update/refresh")
+@admin_required
+def app_update_refresh():
+    if not require_csrf():
+        return "CSRF validation failed", 400
+    result = get_app_release(current_app, force=True)
+    history_result = get_release_history(current_app, force=True)
+    if result.get("ok") and result.get("snapshot"):
+        tag = result["snapshot"].get("tag") or result["snapshot"].get("version_name")
+        if result.get("stale"):
+            log_event("app_update", "error", f"Android Release 同步失败，继续使用缓存：{tag}")
+            flash(f"同步失败，继续使用上一次缓存：{tag}", "error")
+        else:
+            history_count = len(history_result.get("releases", [])) if history_result.get("ok") else 0
+            log_event("app_update", "success", f"已同步 Android Latest Release：{tag}；历史版本 {history_count} 个")
+            suffix = f"，历史版本 {history_count} 个" if history_result.get("ok") else "，历史版本同步失败"
+            flash(f"已同步 Android Latest Release：{tag}{suffix}", "success")
+    else:
+        error = result.get("error", "未知错误")
+        log_event("app_update", "error", f"同步 Android Release 失败：{error}")
+        flash(f"同步 Android Release 失败：{error}", "error")
+    return redirect(url_for("admin.app_update_admin"))
 
 
 @admin_bp.get("/settings")

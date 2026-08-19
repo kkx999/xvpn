@@ -23,6 +23,7 @@ def create_app():
     app.config["SESSION_COOKIE_SECURE"] = os.environ.get("COOKIE_SECURE", "0") == "1"
     app.config["DATABASE_PATH"] = os.environ.get("DATABASE_PATH", "./data/panel.db")
     app.config["FERNET_KEY"] = os.environ.get("FERNET_KEY", "")
+    app.config["ANDROID_UPDATE_REPOSITORY"] = os.environ.get("XVPN_ANDROID_REPOSITORY", "kkx999/XVPN-Android").strip() or "kkx999/XVPN-Android"
     app.config["ADMIN_ALLOWED_IPS"] = {
         x.strip() for x in os.environ.get("ADMIN_ALLOWED_IPS", "").split(",") if x.strip()
     }

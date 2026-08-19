@@ -16,19 +16,61 @@ Android App 使用 Bearer Token。普通用户与管理员均可登录；流量�
   "ok": true,
   "service": "XVPN Panel",
   "api": "v1",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "registration_enabled": true,
   "token_days": 30,
   "app_api_ready": true,
   "traffic_reporting": true,
   "traffic_report_interval_seconds": 300,
   "traffic_report_requires_node_id": true,
-  "panel_timezone": "Asia/Shanghai"
+  "panel_timezone": "Asia/Shanghai",
+  "app_update_api": true,
+  "app_update_check_interval_seconds": 43200
 }
 ```
 
 ### GET `/health`
 健康检查。无需登录。
+
+### GET `/app/update`
+无需登录。Android 正式版优先通过此接口获取更新元数据；Panel 暂时不可用时，客户端可回退到 Android GitHub Latest Release。
+
+推荐请求：
+
+```http
+GET /api/v1/app/update?version_name=0.1.0&version_code=10009
+```
+
+返回示例：
+
+```json
+{
+  "ok": true,
+  "enabled": true,
+  "update_available": true,
+  "force_policy_enabled": false,
+  "force_update": false,
+  "must_update": false,
+  "min_version_code": 0,
+  "minimum_reachable": true,
+  "check_interval_seconds": 43200,
+  "version_name": "0.1.1",
+  "version_code": 10010,
+  "apk_url": "https://github.com/.../XVPN-v0.1.1.apk",
+  "sha256": "...",
+  "release_notes": "...",
+  "latest": {
+    "tag": "v0.1.1",
+    "version_name": "0.1.1",
+    "version_code": 10010,
+    "apk_name": "XVPN-v0.1.1.apk",
+    "apk_url": "https://github.com/.../XVPN-v0.1.1.apk",
+    "sha256": "..."
+  }
+}
+```
+
+Panel 只接受同时包含 APK 与 `SHA256SUMS.txt` 的完整 Latest Release。GitHub 临时异常时会继续使用最后一次成功快照并返回 `stale: true`。`force_policy_enabled` 表示后台强制更新开关，`force_update` / `must_update` 表示当前客户端是否必须立即更新。
 
 ## 2. 注册
 
@@ -91,7 +133,7 @@ Bearer Token 必需。推荐 App 登录成功后以及冷启动时优先调用�
 {
   "ok": true,
   "api": "v1",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "server_time": "2026-08-18T06:00:00+00:00",
   "registration_enabled": true,
   "user": {
@@ -104,6 +146,8 @@ Bearer Token 必需。推荐 App 登录成功后以及冷启动时优先调用�
   "traffic_report_interval_seconds": 300,
   "traffic_report_requires_node_id": true,
   "panel_timezone": "Asia/Shanghai",
+  "app_update_api": true,
+  "app_update_check_interval_seconds": 43200,
   "traffic": {
     "today_upload": 1048576,
     "today_download": 5242880,
@@ -269,3 +313,11 @@ Panel 不设置流量额度，也不做节点侧计费；流量来源仍然是 A
 ## 管理员 App 登录
 
 管理员后台账户也可以直接调用 `POST /api/v1/login` 登录 Android App。成功后 `user.role` 为 `admin`；普通用户为 `user`。管理员 App 登录同样使用 Bearer Token，可读取所有启用节点。管理员在后台修改用户名/密码后，已有管理员 App Token 会立即失效。
+
+
+### Panel 更新策略说明
+
+- Android Release 仓库由 Panel 后台配置，默认 `kkx999/XVPN-Android`，可改为任意合法 `owner/repo`。
+- `min_version_code = 0` 表示不限制；大于 0 时表示“最低允许运行 versionCode”。客户端 `version_code` 低于该值、且当前 Latest Release 可以达到该最低版本时，接口返回 `below_minimum=true`、`force_update=true`、`must_update=true`。
+- 后台历史下拉会展示正式版和测试版，但高于当前 Latest Release 的版本不可设为最低版本，避免强制更新目标不可达。
+- 更换仓库后 Panel 会丢弃旧仓库缓存并重新同步 Latest Release。

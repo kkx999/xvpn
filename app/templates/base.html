@@ -17,6 +17,7 @@
       <a class="nav-item {% if request.endpoint=='admin.node_overview' %}active{% endif %}" href="{{ url_for('admin.node_overview') }}">节点一览</a>
       <a class="nav-item {% if request.endpoint and request.endpoint.startswith('admin.node') and request.endpoint!='admin.node_overview' %}active{% endif %}" href="{{ url_for('admin.nodes') }}">节点管理</a>
       <a class="nav-item {% if request.endpoint and request.endpoint.startswith('admin.user') %}active{% endif %}" href="{{ url_for('admin.users') }}">用户管理</a>
+      <a class="nav-item {% if request.endpoint and request.endpoint.startswith('admin.app_update') %}active{% endif %}" href="{{ url_for('admin.app_update_admin') }}">App 更新</a>
       <a class="nav-item {% if request.endpoint and request.endpoint.startswith('admin.invite') %}active{% endif %}" href="{{ url_for('admin.invites') }}">邀请码</a>
       <a class="nav-item {% if request.endpoint and (request.endpoint.startswith('admin.settings') or request.endpoint in ['admin.admin_password','admin.backup_create','admin.backup_restore','admin.backup_delete','admin.backup_upload_restore']) %}active{% endif %}" href="{{ url_for('admin.settings') }}">系统设置</a>
     </nav>
@@ -39,7 +40,7 @@
   <a class="{% if request.endpoint and request.endpoint.startswith('admin.node') %}active{% endif %}" href="{{ url_for('admin.node_overview') }}">节点</a>
   <a class="{% if request.endpoint and request.endpoint.startswith('admin.user') %}active{% endif %}" href="{{ url_for('admin.users') }}">用户</a>
   <a class="{% if request.endpoint and request.endpoint.startswith('admin.invite') %}active{% endif %}" href="{{ url_for('admin.invites') }}">邀请码</a>
-  <a class="{% if request.endpoint and (request.endpoint.startswith('admin.settings') or request.endpoint=='admin.admin_password') %}active{% endif %}" href="{{ url_for('admin.settings') }}">设置</a>
+  <a class="{% if request.endpoint and (request.endpoint.startswith('admin.settings') or request.endpoint.startswith('admin.app_update') or request.endpoint=='admin.admin_password') %}active{% endif %}" href="{{ url_for('admin.settings') }}">设置</a>
 </nav>
 
 <div class="web-modal" id="confirm-modal" aria-hidden="true">

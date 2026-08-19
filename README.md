@@ -1,6 +1,6 @@
 # XVPN Panel
 
-> 当前正式版本：`v1.2.0`。
+> 当前正式版本：`v1.2.1`。
 
 邀请制私人 VPN 管理面板：管理员在网页维护节点、用户和邀请码，Android App 用户注册登录后直接使用全部启用节点。
 
@@ -12,6 +12,7 @@
 - 邀请码注册、可用次数、用户停用与密码管理
 - 管理员用户名 / 密码均可在后台修改
 - Android API：注册、登录、改密码、Bootstrap、节点下发、用户流量上报；管理员账户也可登录 App
+- Android App 更新控制：Panel 默认读取 `kkx999/XVPN-Android` Latest Release（后台可自定义 owner/repo），校验 APK / SHA-256，并下发更新策略
 - 明暗主题、iOS 风格开关、网页化管理
 - 首页今日流量概览：TOP 5 用户 / 节点排行；用户今日 / 本月 / 累计流量后台汇总与分页明细
 - 手动/自动备份、上传恢复、Telegram 异地备份与可清除运行记录
@@ -35,13 +36,13 @@ bash <(curl -fsSL https://raw.githubusercontent.com/kkx999/xvpn/main/install-onl
 
 ```bash
 apt update && apt install -y curl ca-certificates && \
-bash <(curl -fsSL https://raw.githubusercontent.com/kkx999/xvpn/main/install-online.sh) --version v1.2.0
+bash <(curl -fsSL https://raw.githubusercontent.com/kkx999/xvpn/main/install-online.sh) --version v1.2.1
 ```
 
 或安装后直接执行：
 
 ```bash
-xvpn update v1.2.0
+xvpn update v1.2.1
 ```
 
 ## 管理命令
@@ -50,7 +51,7 @@ xvpn update v1.2.0
 xvpn
 xvpn check
 xvpn update
-xvpn update v1.2.0
+xvpn update v1.2.1
 xvpn domain
 xvpn status
 xvpn restart
@@ -60,3 +61,9 @@ xvpn version
 ```
 
 更新默认只使用 Latest Release 正式资产，不再用 `main` 分支源码覆盖生产环境。Android 接口见 `APP_API.md` / `APP_API_OPENAPI.yaml`，GitHub 更新说明见 `GITHUB_UPDATE.md`。
+
+
+## Android App 更新策略补充
+
+- 最低允许运行版本由历史 GitHub Release 下拉选择；管理员无需手工记忆 versionCode。
+- 历史列表同时标记正式版/测试版，只有可识别 versionCode 的完整 APK Release 可选择。

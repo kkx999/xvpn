@@ -25,13 +25,13 @@ bash <(curl -fsSL https://raw.githubusercontent.com/kkx999/xvpn/main/install-onl
 
 ```bash
 apt update && apt install -y curl ca-certificates && \
-bash <(curl -fsSL https://raw.githubusercontent.com/kkx999/xvpn/main/install-online.sh) --version v1.2.0
+bash <(curl -fsSL https://raw.githubusercontent.com/kkx999/xvpn/main/install-online.sh) --version v1.2.1
 ```
 
 安装后也可以直接执行：
 
 ```bash
-xvpn update v1.2.0
+xvpn update v1.2.1
 ```
 
 指定与当前相同的版本会重新安装，可用于修复代码文件；只有明确降级到旧版本时才会要求再次确认。
@@ -42,7 +42,7 @@ xvpn update v1.2.0
 xvpn                # 管理菜单
 xvpn check           # 检查 Latest Release
 xvpn update          # 直接更新到最新正式版本
-xvpn update v1.2.0   # 安装或重装指定正式版本
+xvpn update v1.2.1   # 安装或重装指定正式版本
 xvpn domain          # 域名 / HTTPS
 ```
 

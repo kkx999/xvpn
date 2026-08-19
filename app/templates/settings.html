@@ -67,6 +67,15 @@
   </section>
 </div>
 
+<a class="panel-card app-update-entry" href="{{ url_for('admin.app_update_admin') }}">
+  <div>
+    <span class="app-update-entry-kicker">Android App 更新</span>
+    <strong>由 Panel 统一控制更新策略</strong>
+    <small>APK 继续托管在 GitHub Release；这里负责 Latest Release、SHA-256、强制更新与最低版本策略。</small>
+  </div>
+  <span class="app-update-entry-action">管理更新</span>
+</a>
+
 <section class="panel-card backup-section" id="backup-section">
   <div class="card-head">
     <div><h2>备份与恢复</h2><p>手动备份、上传恢复、自动备份和 Telegram 异地备份都在这里完成。</p></div>

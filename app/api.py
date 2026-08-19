@@ -10,6 +10,7 @@ from .crypto import decrypt_text
 from .db import connect, transaction, utcnow
 from .version import APP_VERSION
 from .traffic import traffic_period_keys, traffic_summary
+from .app_updates import app_update_payload
 
 api_bp = Blueprint("api", __name__)
 
@@ -180,7 +181,31 @@ def api_index():
         "traffic_report_interval_seconds": 300,
         "traffic_report_requires_node_id": True,
         "panel_timezone": current_app.config.get("PANEL_TIMEZONE", "UTC"),
+        "app_update_api": True,
+        "app_update_check_interval_seconds": 43200,
     }
+
+
+@api_bp.get("/app/update")
+def app_update():
+    """Public Android update metadata. APK binaries remain hosted in GitHub Releases."""
+    version_name = str(
+        request.args.get("version_name") or request.args.get("versionName") or
+        request.args.get("current_version") or request.args.get("currentVersion") or
+        request.headers.get("X-App-Version") or request.headers.get("X-Version-Name") or ""
+    ).strip()[:64]
+    raw_code = (
+        request.args.get("version_code") or request.args.get("versionCode") or
+        request.args.get("current_version_code") or request.args.get("currentVersionCode") or
+        request.headers.get("X-App-Version-Code") or request.headers.get("X-Version-Code") or "0"
+    )
+    try:
+        version_code = max(0, int(raw_code or 0))
+    except (TypeError, ValueError):
+        return response_error("INVALID_VERSION_CODE", "version_code 必须是非负整数")
+    payload = app_update_payload(current_app, version_name, version_code)
+    status = 200 if payload.get("ok") else 503
+    return jsonify(payload), status
 
 
 @api_bp.get("/health")
@@ -382,6 +407,8 @@ def app_bootstrap():
         "traffic_report_interval_seconds": 300,
         "traffic_report_requires_node_id": True,
         "panel_timezone": current_app.config.get("PANEL_TIMEZONE", "UTC"),
+        "app_update_api": True,
+        "app_update_check_interval_seconds": 43200,
         "user": {"id": g.user["id"], "username": g.user["username"], "status": "active", "role": g.user.get("role", "user")},
         "traffic": traffic,
         "nodes": {"countries": payload["countries"], "total": payload["total"]},
