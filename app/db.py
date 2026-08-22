@@ -171,16 +171,19 @@ def init_db(app):
 
 
 def bootstrap_admin(app):
+    """Create the first administrator exactly once, even under concurrent app boots."""
     import os
+
     password = os.environ.get('ADMIN_PASSWORD', '').strip()
-    with connect(app) as conn:
+    # BEGIN IMMEDIATE serializes the first-run check+insert across concurrent workers.
+    # INSERT OR IGNORE is a final idempotency guard if another process won the race.
+    with transaction(app) as conn:
         if conn.execute('SELECT 1 FROM admins LIMIT 1').fetchone():
             return
         if not password or password == 'change-me-now':
             raise RuntimeError('ADMIN_PASSWORD is required for first-run bootstrap')
         now = utcnow()
         conn.execute(
-            'INSERT INTO admins(username,password_hash,created_at,updated_at) VALUES(?,?,?,?)',
+            'INSERT OR IGNORE INTO admins(username,password_hash,created_at,updated_at) VALUES(?,?,?,?)',
             ('admin', generate_password_hash(password, method='scrypt'), now, now),
         )
-        conn.commit()
