@@ -1,5 +1,6 @@
 import base64
 import json
+import uuid
 from urllib.parse import parse_qs, unquote, urlsplit
 
 SCHEMA = "xvpn.node.v1"
@@ -29,6 +30,16 @@ def _port(value):
     if port < 1 or port > 65535:
         raise ValueError("节点端口需为 1-65535")
     return port
+
+
+def _uuid_value(value, label):
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(f"{label} 不能为空")
+    try:
+        return str(uuid.UUID(text))
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise ValueError(f"{label} 格式无效") from exc
 
 
 def _b64_text(value, error="Base64 数据无效"):
@@ -116,14 +127,107 @@ def _apply_transport(profile, query):
     profile["transport"] = transport
 
 
+def validate_profile(profile):
+    """Normalize and validate the stable Panel -> Android node contract."""
+    if not isinstance(profile, dict):
+        raise ValueError("节点标准数据必须是 JSON 对象")
+    if profile.get("schema") != SCHEMA:
+        raise ValueError("JSON 节点必须使用 xvpn.node.v1 标准")
+
+    protocol_raw = str(profile.get("protocol") or "").strip().lower()
+    protocol = ALIASES.get(protocol_raw, protocol_raw)
+    if protocol not in SUPPORTED:
+        raise ValueError("当前协议暂不支持")
+    profile["protocol"] = protocol
+
+    server = str(profile.get("server") or "").strip().strip("[]")
+    if not server:
+        raise ValueError("节点服务器地址不能为空")
+    if any(ch.isspace() for ch in server):
+        raise ValueError("节点服务器地址格式无效")
+    profile["server"] = server
+    profile["port"] = _port(profile.get("port"))
+
+    auth = profile.get("auth")
+    tls = profile.get("tls")
+    transport = profile.get("transport")
+    options = profile.get("options")
+    if not isinstance(auth, dict):
+        raise ValueError("节点 auth 必须是对象")
+    if not isinstance(tls, dict):
+        raise ValueError("节点 tls 必须是对象")
+    if not isinstance(transport, dict):
+        raise ValueError("节点 transport 必须是对象")
+    if not isinstance(options, dict):
+        raise ValueError("节点 options 必须是对象")
+
+    enabled = tls.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError("tls.enabled 必须是布尔值")
+    tls["enabled"] = enabled
+    transport_type = str(transport.get("type") or "tcp").strip().lower()
+    if not transport_type:
+        raise ValueError("transport.type 不能为空")
+    transport["type"] = transport_type
+
+    if protocol in {"vless", "vmess"}:
+        auth["uuid"] = _uuid_value(auth.get("uuid"), f"{protocol.upper()} UUID")
+    elif protocol in {"trojan", "hysteria2", "anytls"}:
+        if str(auth.get("password") or "") == "":
+            raise ValueError(f"{protocol.upper()} 密码不能为空")
+    elif protocol == "shadowsocks":
+        if not str(auth.get("method") or "").strip() or str(auth.get("password") or "") == "":
+            raise ValueError("Shadowsocks 方法或密码不能为空")
+    elif protocol == "tuic":
+        auth["uuid"] = _uuid_value(auth.get("uuid"), "TUIC UUID")
+        if str(auth.get("password") or "") == "":
+            raise ValueError("TUIC 密码不能为空")
+
+    if protocol == "vmess":
+        try:
+            alter_id = int(auth.get("alter_id", 0))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("VMess alter_id 无效") from exc
+        if alter_id < 0:
+            raise ValueError("VMess alter_id 不能为负数")
+        auth["alter_id"] = alter_id
+
+    if protocol in {"hysteria2", "tuic", "anytls"} and not enabled:
+        raise ValueError(f"{protocol.upper()} 必须启用 TLS")
+
+    reality = tls.get("reality")
+    if reality is not None:
+        if not isinstance(reality, dict):
+            raise ValueError("tls.reality 必须是对象")
+        reality_enabled = reality.get("enabled", False)
+        if not isinstance(reality_enabled, bool):
+            raise ValueError("tls.reality.enabled 必须是布尔值")
+        if reality_enabled:
+            if not enabled:
+                raise ValueError("Reality 必须同时启用 TLS")
+            if not str(reality.get("public_key") or "").strip():
+                raise ValueError("Reality public_key 不能为空")
+            if not str(tls.get("server_name") or "").strip():
+                raise ValueError("Reality server_name/SNI 不能为空")
+
+    profile["auth"] = auth
+    profile["tls"] = tls
+    profile["transport"] = transport
+    profile["options"] = options
+    return profile
+
+
 def _vmess(raw):
     body = raw.split("://", 1)[1].split("#", 1)[0]
-    obj = json.loads(_b64_text(body, "VMess Base64 数据无效"))
+    try:
+        obj = json.loads(_b64_text(body, "VMess Base64 数据无效"))
+    except json.JSONDecodeError as exc:
+        raise ValueError("VMess JSON 数据无效") from exc
     profile = _base("vmess", obj.get("add"), obj.get("port"))
-    uuid = str(obj.get("id") or "").strip()
-    if not uuid:
-        raise ValueError("VMess UUID 不能为空")
-    profile["auth"] = {"uuid": uuid, "alter_id": int(obj.get("aid") or 0)}
+    profile["auth"] = {
+        "uuid": str(obj.get("id") or "").strip(),
+        "alter_id": obj.get("aid") or 0,
+    }
     if obj.get("scy"):
         profile["options"]["cipher"] = str(obj.get("scy"))
     profile["transport"] = {"type": str(obj.get("net") or "tcp").lower()}
@@ -137,7 +241,7 @@ def _vmess(raw):
         profile["tls"]["server_name"] = str(obj.get("sni"))
     if tls and obj.get("fp"):
         profile["tls"]["fingerprint"] = str(obj.get("fp"))
-    return profile
+    return validate_profile(profile)
 
 
 def _shadowsocks(raw):
@@ -171,14 +275,12 @@ def _shadowsocks(raw):
 
     method = unquote(method).strip()
     password = unquote(password)
-    if not method or password == "":
-        raise ValueError("Shadowsocks 方法或密码不能为空")
     profile = _base("shadowsocks", host, port)
     profile["auth"] = {"method": method, "password": password}
     plugin = _last(query, "plugin")
     if plugin:
         profile["options"]["plugin"] = unquote(plugin)
-    return profile
+    return validate_profile(profile)
 
 
 def canonical_profile(raw):
@@ -191,21 +293,7 @@ def canonical_profile(raw):
             obj = json.loads(raw)
         except Exception as exc:
             raise ValueError("节点 JSON 无效") from exc
-        if obj.get("schema") != SCHEMA:
-            raise ValueError("JSON 节点必须使用 xvpn.node.v1 标准")
-        protocol = ALIASES.get(str(obj.get("protocol") or "").lower(), str(obj.get("protocol") or "").lower())
-        if protocol not in SUPPORTED:
-            raise ValueError("当前协议暂不支持")
-        obj["protocol"] = protocol
-        obj["server"] = str(obj.get("server") or "").strip()
-        obj["port"] = _port(obj.get("port"))
-        if not obj["server"]:
-            raise ValueError("节点服务器地址不能为空")
-        obj.setdefault("auth", {})
-        obj.setdefault("tls", {"enabled": False})
-        obj.setdefault("transport", {"type": "tcp"})
-        obj.setdefault("options", {})
-        return obj
+        return validate_profile(obj)
 
     scheme = raw.split("://", 1)[0].lower() if "://" in raw else ""
     protocol = ALIASES.get(scheme, scheme)
@@ -216,15 +304,18 @@ def canonical_profile(raw):
     if protocol not in SUPPORTED:
         raise ValueError(f"暂不支持此节点协议：{scheme or '未知'}")
 
-    parsed = urlsplit(raw)
+    try:
+        parsed = urlsplit(raw)
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("节点地址或端口格式无效") from exc
     query = {k.lower(): v for k, v in parse_qs(parsed.query, keep_blank_values=True).items()}
-    profile = _base(protocol, parsed.hostname, parsed.port)
+    profile = _base(protocol, host, port)
     username = unquote(parsed.username or "")
     password = unquote(parsed.password or "")
 
     if protocol == "vless":
-        if not username:
-            raise ValueError("VLESS UUID 不能为空")
         profile["auth"] = {"uuid": username}
         flow = _last(query, "flow")
         if flow:
@@ -235,17 +326,11 @@ def canonical_profile(raw):
         _apply_tls(profile, query)
         _apply_transport(profile, query)
     elif protocol == "trojan":
-        secret = username or password
-        if not secret:
-            raise ValueError("Trojan 密码不能为空")
-        profile["auth"] = {"password": secret}
+        profile["auth"] = {"password": username or password}
         _apply_tls(profile, query, True)
         _apply_transport(profile, query)
     elif protocol == "hysteria2":
-        secret = username or password
-        if not secret:
-            raise ValueError("Hysteria2 密码不能为空")
-        profile["auth"] = {"password": secret}
+        profile["auth"] = {"password": username or password}
         profile["tls"] = {"enabled": True}
         sni = _last(query, "sni", "peer")
         if sni:
@@ -259,8 +344,6 @@ def canonical_profile(raw):
             if obfs_password:
                 profile["options"]["obfs_password"] = obfs_password
     elif protocol == "tuic":
-        if not username or not password:
-            raise ValueError("TUIC UUID 和密码不能为空")
         profile["auth"] = {"uuid": username, "password": password}
         profile["tls"] = {"enabled": True}
         sni = _last(query, "sni")
@@ -275,12 +358,10 @@ def canonical_profile(raw):
         if alpn:
             profile["options"]["alpn"] = [x.strip() for x in alpn.split(",") if x.strip()]
     elif protocol == "anytls":
-        secret = username or password
-        if not secret:
-            raise ValueError("AnyTLS 密码不能为空")
-        profile["auth"] = {"password": secret}
+        profile["auth"] = {"password": username or password}
         _apply_tls(profile, query, True)
-    return profile
+
+    return validate_profile(profile)
 
 
 def profile_details(profile):
