@@ -1,0 +1,51 @@
+name: Temporary Panel v1 Audit
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Bash syntax
+        run: |
+          bash -n install.sh
+          bash -n install-latest.sh
+          bash -n install-online.sh
+          bash -n domain-manager.sh
+          bash -n xvpn
+          bash -n build-release.sh
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+      - name: Compile Python
+        run: python -m compileall -q app run.py selftest.py reset-admin-password.py backup-worker.py
+      - name: Run application self-test
+        run: python selftest.py
+      - name: Build release archive
+        run: bash build-release.sh /tmp/xvpn-dist
+      - name: Verify release archive and rerun packaged self-test
+        run: |
+          python - <<'PY'
+          import pathlib, zipfile
+          z = next(pathlib.Path('/tmp/xvpn-dist').glob('xvpn-panel-v*.zip'))
+          out = pathlib.Path('/tmp/xvpn-packed')
+          with zipfile.ZipFile(z) as f:
+              assert f.testzip() is None
+              f.extractall(out)
+          root = next(out.glob('xvpn-panel-v*'))
+          print(root)
+          PY
+          cd /tmp/xvpn-packed/xvpn-panel-v1.0.0
+          python selftest.py
