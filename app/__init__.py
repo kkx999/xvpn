@@ -8,6 +8,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from .db import bootstrap_admin, connect, init_db
 from .crypto import ensure_crypto_ready
 from .admin import admin_bp
+from .admin_v1 import install_overrides
 from .api import api_bp
 from .settings_store import apply_settings, initialize_from_env
 
@@ -61,6 +62,7 @@ def create_app():
     app.config["ADMIN_PATH"] = path
     app.register_blueprint(admin_bp, url_prefix=f"/{path}")
     app.register_blueprint(api_bp, url_prefix="/api/v1")
+    install_overrides(app)
 
     @app.get("/")
     def root():
