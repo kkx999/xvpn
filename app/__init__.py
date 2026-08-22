@@ -1,19 +1,36 @@
 import os
+import re
 from pathlib import Path
+
 from flask import Flask
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from .db import init_db, bootstrap_admin
+from .db import bootstrap_admin, connect, init_db
 from .crypto import ensure_crypto_ready
 from .admin import admin_bp
 from .api import api_bp
-from .settings_store import initialize_from_env, apply_settings
+from .settings_store import apply_settings, initialize_from_env
+
+
+def _admin_path(app):
+    value = "admin"
+    try:
+        with connect(app) as conn:
+            row = conn.execute("SELECT value FROM system_settings WHERE key='admin_path'").fetchone()
+            if row and row[0]:
+                value = str(row[0]).strip().strip("/")
+    except Exception:
+        pass
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{2,47}", value):
+        return "admin"
+    if value.lower() in {"api", "static", "assets", "health"}:
+        return "admin"
+    return value
 
 
 def create_app():
     app = Flask(__name__)
     app.secret_key = os.environ.get("SECRET_KEY", "dev-only-change-me")
-    # Keep Chinese API messages readable in curl/browser output.
     app.json.ensure_ascii = False
     app.config["PANEL_NAME"] = os.environ.get("PANEL_NAME", "XVPN Panel")
     app.config["PANEL_SUBTITLE"] = os.environ.get("PANEL_SUBTITLE", "私人访问控制台")
@@ -23,7 +40,9 @@ def create_app():
     app.config["SESSION_COOKIE_SECURE"] = os.environ.get("COOKIE_SECURE", "0") == "1"
     app.config["DATABASE_PATH"] = os.environ.get("DATABASE_PATH", "./data/panel.db")
     app.config["FERNET_KEY"] = os.environ.get("FERNET_KEY", "")
-    app.config["ANDROID_UPDATE_REPOSITORY"] = os.environ.get("XVPN_ANDROID_REPOSITORY", "kkx999/XVPN-Android").strip() or "kkx999/XVPN-Android"
+    app.config["ANDROID_UPDATE_REPOSITORY"] = os.environ.get(
+        "XVPN_ANDROID_REPOSITORY", "kkx999/XVPN-Android"
+    ).strip() or "kkx999/XVPN-Android"
     app.config["ADMIN_ALLOWED_IPS"] = {
         x.strip() for x in os.environ.get("ADMIN_ALLOWED_IPS", "").split(",") if x.strip()
     }
@@ -38,11 +57,18 @@ def create_app():
     apply_settings(app)
     bootstrap_admin(app)
 
-    app.register_blueprint(admin_bp, url_prefix="/admin")
+    path = _admin_path(app)
+    app.config["ADMIN_PATH"] = path
+    app.register_blueprint(admin_bp, url_prefix=f"/{path}")
     app.register_blueprint(api_bp, url_prefix="/api/v1")
 
     @app.get("/")
     def root():
-        return {"service": app.config["PANEL_NAME"], "status": "ok"}
+        return {
+            "service": app.config["PANEL_NAME"],
+            "status": "ok",
+            "core": "mihomo",
+            "node_schema": "xvpn.node.v1",
+        }
 
     return app
