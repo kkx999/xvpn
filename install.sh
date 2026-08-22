@@ -77,7 +77,7 @@ if [[ -f "$ENV_FILE" || -f "$DATA_DIR/panel.db" ]]; then
 fi
 rm -rf "$APP_DIR/app" "$APP_DIR/.venv"
 cp -a "$SCRIPT_DIR/app" "$APP_DIR/"
-for f in run.py requirements.txt reset-admin-password.py backup-worker.py VERSION xvpn install-online.sh domain-manager.sh; do
+for f in run.py requirements.txt reset-admin-password.py backup-worker.py selftest.py VERSION xvpn install-online.sh domain-manager.sh; do
   [[ -e "$SCRIPT_DIR/$f" ]] && cp -a "$SCRIPT_DIR/$f" "$APP_DIR/"
 done
 chmod 755 "$APP_DIR/xvpn" "$APP_DIR/install-online.sh" "$APP_DIR/domain-manager.sh" 2>/dev/null || true
@@ -95,6 +95,10 @@ info "[4/7] 创建 Python 环境和安全配置"
 python3 -m venv "$APP_DIR/.venv"
 "$APP_DIR/.venv/bin/pip" install --upgrade pip >/dev/null
 "$APP_DIR/.venv/bin/pip" install -r "$APP_DIR/requirements.txt" >/dev/null
+
+info "运行 v$VERSION 内置自检"
+(cd "$APP_DIR" && "$APP_DIR/.venv/bin/python" selftest.py) || fail "内置自检失败，已停止安装，不会启动此版本"
+ok "代码、路由、后台路径与 Mihomo 节点解析自检通过"
 
 ADMIN_PASSWORD=""
 if [[ ! -f "$ENV_FILE" ]]; then
