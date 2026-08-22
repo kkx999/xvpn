@@ -59,9 +59,3 @@ Panel 不再向 Android 下发 sing-box 配置，也不保留旧 raw-config API 
 - Hysteria2
 - TUIC
 - AnyTLS
-
-节点导入时立即校验；批量导入只要有一条无效，整批不会写入数据库。数据库中保存的是加密后的 `xvpn.node.v1` 标准节点数据。
-
-Android API Base path：`/api/v1`。Android 只消费 `profile` 中的 `xvpn.node.v1` 数据，详细契约见 `APP_API.md`。
-
-旧版 Panel 源码只保存在 `legacy-panel` 分支，用于历史参考，不参与 v1.0.0 运行。
