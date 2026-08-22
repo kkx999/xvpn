@@ -12,7 +12,7 @@ from .backup_manager import list_backups
 from .crypto import decrypt_text, encrypt_text
 from .db import connect, transaction, utcnow
 from .event_log import list_events
-from .node_profile import canonical_profile, original_name, profile_details
+from .node_profile import canonical_profile, original_name, profile_details, validate_profile
 from .settings_store import get_settings, set_settings
 
 
@@ -20,66 +20,8 @@ _RESERVED_ADMIN_PATHS = {"api", "static", "assets", "health"}
 _ADMIN_PATH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{2,47}$")
 
 
-def _required_text(mapping, key, message):
-    value = str((mapping or {}).get(key) or "").strip()
-    if not value:
-        raise ValueError(message)
-    return value
-
-
-def _validate_profile(profile):
-    if not isinstance(profile, dict):
-        raise ValueError("节点标准数据必须是对象")
-    protocol = str(profile.get("protocol") or "").strip().lower()
-    auth = profile.get("auth")
-    tls = profile.get("tls")
-    transport = profile.get("transport")
-    options = profile.get("options")
-    if not isinstance(auth, dict) or not isinstance(tls, dict) or not isinstance(transport, dict) or not isinstance(options, dict):
-        raise ValueError("节点 auth/tls/transport/options 结构无效")
-
-    _required_text(profile, "server", "节点服务器地址不能为空")
-    try:
-        port = int(profile.get("port"))
-    except (TypeError, ValueError):
-        raise ValueError("节点端口无效")
-    if port < 1 or port > 65535:
-        raise ValueError("节点端口需为 1-65535")
-
-    if protocol in {"vless", "vmess"}:
-        _required_text(auth, "uuid", f"{protocol.upper()} UUID 不能为空")
-    elif protocol == "trojan":
-        _required_text(auth, "password", "Trojan 密码不能为空")
-    elif protocol == "shadowsocks":
-        _required_text(auth, "method", "Shadowsocks 加密方法不能为空")
-        if "password" not in auth or str(auth.get("password")) == "":
-            raise ValueError("Shadowsocks 密码不能为空")
-    elif protocol == "hysteria2":
-        _required_text(auth, "password", "Hysteria2 密码不能为空")
-        if not bool(tls.get("enabled")):
-            raise ValueError("Hysteria2 必须启用 TLS")
-    elif protocol == "tuic":
-        _required_text(auth, "uuid", "TUIC UUID 不能为空")
-        _required_text(auth, "password", "TUIC 密码不能为空")
-        if not bool(tls.get("enabled")):
-            raise ValueError("TUIC 必须启用 TLS")
-    elif protocol == "anytls":
-        _required_text(auth, "password", "AnyTLS 密码不能为空")
-        if not bool(tls.get("enabled")):
-            raise ValueError("AnyTLS 必须启用 TLS")
-    else:
-        raise ValueError(f"当前协议暂不支持：{protocol or '未知'}")
-
-    reality = tls.get("reality")
-    if isinstance(reality, dict) and reality.get("enabled"):
-        if not tls.get("enabled"):
-            raise ValueError("Reality 必须同时启用 TLS")
-        _required_text(reality, "public_key", "Reality Public Key 不能为空")
-    return profile
-
-
 def _canonical(raw: str):
-    profile = _validate_profile(canonical_profile(raw))
+    profile = validate_profile(canonical_profile(raw))
     return profile, json.dumps(profile, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
@@ -87,7 +29,7 @@ def _node_view(row):
     item = dict(row)
     try:
         raw = decrypt_text(current_app, row["config_enc"])
-        profile = _validate_profile(canonical_profile(raw))
+        profile = validate_profile(canonical_profile(raw))
         item["protocol_details"] = profile_details(profile)
         item["config"] = json.dumps(profile, ensure_ascii=False, indent=2, sort_keys=True)
     except Exception:
