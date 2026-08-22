@@ -1,0 +1,44 @@
+name: One-shot panel rebuild trigger
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: write
+  actions: write
+  issues: write
+
+jobs:
+  trigger:
+    if: github.event.issue.title == 'RUN_REBUILD_MIHOMO_PANEL_V1'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout preserved source
+        uses: actions/checkout@v4
+        with:
+          ref: legacy-panel
+          fetch-depth: 0
+      - name: Execute reviewed rebuild steps
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git fetch origin main --force
+          git show origin/main:.github/workflows/rebuild-mihomo-panel-v1.yml > /tmp/rebuild.yml
+          ruby -ryaml -rbase64 -e '
+            y=YAML.load_file("/tmp/rebuild.yml")
+            y.dig("jobs","rebuild","steps").each do |s|
+              next unless s.is_a?(Hash) && s["run"]
+              puts Base64.strict_encode64(s["run"])
+            end
+          ' > /tmp/rebuild-steps.b64
+          n=0
+          while IFS= read -r encoded; do
+            n=$((n+1))
+            echo "$encoded" | base64 -d > "/tmp/rebuild-step-$n.sh"
+            echo "===== executing rebuild step $n ====="
+            bash "/tmp/rebuild-step-$n.sh"
+          done < /tmp/rebuild-steps.b64
