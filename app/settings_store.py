@@ -5,6 +5,7 @@ from .db import connect, utcnow
 DEFAULTS = {
     "panel_name": "XVPN Panel",
     "panel_subtitle": "私人访问控制台",
+    "admin_path": "admin",
     "token_days": "30",
     "registration_enabled": "1",
     # Backup / Telegram defaults
@@ -80,7 +81,7 @@ def initialize_from_env(app):
     with connect(app) as conn:
         marker = conn.execute("SELECT value FROM system_settings WHERE key='initialized_from_env'").fetchone()
         if marker:
-            # Ensure all newly added defaults exist on upgraded installations.
+            # Fresh v1.x databases may gain new settings over time; defaults are additive only.
             now = utcnow()
             for key, value in DEFAULTS.items():
                 conn.execute(
