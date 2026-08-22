@@ -34,6 +34,14 @@ def vmess_sample():
     return "vmess://" + raw
 
 
+def expect_invalid(parser, raw, label):
+    try:
+        parser(raw)
+    except ValueError:
+        return
+    raise AssertionError(f"invalid node was accepted: {label}")
+
+
 def main():
     os.environ["XVPN_DISABLE_SELF_RELOAD"] = "1"
     os.environ["SECRET_KEY"] = "selftest-secret-key"
@@ -43,18 +51,20 @@ def main():
     os.environ["COOKIE_SECURE"] = "0"
 
     with tempfile.TemporaryDirectory(prefix="xvpn-panel-selftest-") as tmp:
-        os.environ["DATABASE_PATH"] = str(Path(tmp) / "panel.db")
+        root = Path(tmp)
+        os.environ["DATABASE_PATH"] = str(root / "panel.db")
+        os.environ["BACKUP_DIR"] = str(root / "backups")
 
         from app import create_app
         from app.admin_v1 import _canonical
+        from app.backup_manager import create_backup, restore_backup
         from app.crypto import encrypt_text
         from app.db import bootstrap_admin, connect, init_db, utcnow
-        from app.settings_store import set_settings
+        from app.settings_store import get_settings, set_settings
 
-        # Reproduce the first-boot race that can happen when multiple workers/processes
-        # enter bootstrap at the same time. Exactly one admin row must survive.
+        # Concurrent first boot must create exactly one administrator.
         race_app = Flask("xvpn-bootstrap-selftest")
-        race_app.config["DATABASE_PATH"] = str(Path(tmp) / "bootstrap-race.db")
+        race_app.config["DATABASE_PATH"] = str(root / "bootstrap-race.db")
         init_db(race_app)
         with ThreadPoolExecutor(max_workers=8) as pool:
             futures = [pool.submit(bootstrap_admin, race_app) for _ in range(8)]
@@ -71,6 +81,7 @@ def main():
             "tuic://11111111-1111-4111-8111-111111111111:tuic-password@tuic.example.com:443?sni=tuic.example.com&congestion_control=bbr#TUIC",
             "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ=@ss.example.com:8388#SS",
             vmess_sample(),
+            "anytls://anytls-password@anytls.example.com:443?sni=anytls.example.com#AnyTLS",
         ]
         protocols = []
         canonical_samples = []
@@ -81,14 +92,31 @@ def main():
             require(json.loads(canonical)["protocol"] == profile["protocol"], "canonical JSON mismatch")
             protocols.append(profile["protocol"])
             canonical_samples.append(canonical)
-        require(protocols == ["vless", "trojan", "hysteria2", "tuic", "shadowsocks", "vmess"], "protocol parser mismatch")
+        require(
+            protocols == ["vless", "trojan", "hysteria2", "tuic", "shadowsocks", "vmess", "anytls"],
+            "protocol parser mismatch",
+        )
 
-        try:
-            _canonical('{"schema":"xvpn.node.v1","protocol":"vless","server":"x.example.com","port":443,"auth":{},"tls":{"enabled":false},"transport":{"type":"tcp"},"options":{}}')
-        except ValueError:
-            pass
-        else:
-            raise AssertionError("invalid canonical VLESS was accepted")
+        expect_invalid(
+            _canonical,
+            '{"schema":"xvpn.node.v1","protocol":"vless","server":"x.example.com","port":443,"auth":{},"tls":{"enabled":false},"transport":{"type":"tcp"},"options":{}}',
+            "missing VLESS UUID",
+        )
+        expect_invalid(
+            _canonical,
+            "vless://not-a-uuid@x.example.com:443?security=tls&sni=x.example.com#bad-uuid",
+            "malformed VLESS UUID",
+        )
+        expect_invalid(
+            _canonical,
+            "vless://11111111-1111-4111-8111-111111111111@x.example.com:443?security=reality&sni=x.example.com#missing-pbk",
+            "Reality without public key",
+        )
+        expect_invalid(
+            _canonical,
+            '{"schema":"xvpn.node.v1","protocol":"hysteria2","server":"x.example.com","port":443,"auth":{"password":"x"},"tls":{"enabled":false},"transport":{"type":"tcp"},"options":{}}',
+            "Hysteria2 without TLS",
+        )
 
         app = create_app()
         app.testing = True
@@ -171,16 +199,24 @@ def main():
         require((r2.get("delta") or {}).get("upload_bytes") == 50, "traffic upload delta mismatch")
         require((r2.get("delta") or {}).get("download_bytes") == 60, "traffic download delta mismatch")
 
+        # Backup before changing admin_path, then restore after the change. Restore must
+        # keep the current access path and must not revive the App bearer token.
         with app.app_context():
+            archive = create_backup("manual")
+            require(archive.parent == root / "backups", "backup directory mismatch")
+            require(archive.is_file() and archive.stat().st_size > 0, "backup archive missing")
             set_settings({"admin_path": "manage-xvpn"})
+            restore_backup(archive)
+            require(get_settings().get("admin_path") == "manage-xvpn", "backup restore changed admin path")
 
         app2 = create_app()
         app2.testing = True
         client2 = app2.test_client()
         require(client2.get("/manage-xvpn/login").status_code == 200, "custom admin path failed")
         require(client2.get("/admin/login").status_code == 404, "old admin path still exposed")
-        root = client2.get("/").get_json() or {}
-        require(root.get("core") == "mihomo" and root.get("node_schema") == "xvpn.node.v1", "root capability metadata mismatch")
+        require(client2.get("/api/v1/nodes", headers=auth).status_code == 401, "backup restore revived old App token")
+        root_json = client2.get("/").get_json() or {}
+        require(root_json.get("core") == "mihomo" and root_json.get("node_schema") == "xvpn.node.v1", "root capability metadata mismatch")
 
     print("XVPN Panel self-test: OK")
 
