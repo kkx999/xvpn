@@ -19,6 +19,27 @@ ok(){ echo "[OK] $*"; }
 warn(){ echo "[WARN] $*"; }
 fail(){ echo "[ERROR] $*" >&2; exit 1; }
 
+env_value(){
+  local key="$1"
+  [[ -f "$ENV_FILE" ]] || return 0
+  awk -v k="$key" 'index($0,k"=")==1 {sub(/^[^=]*=/,""); print; exit}' "$ENV_FILE" 2>/dev/null || true
+}
+
+nginx_domain(){
+  [[ -f "$NGINX_SITE" ]] || return 0
+  awk '/^[[:space:]]*server_name[[:space:]]+/ {gsub(/;/,"",$2);if($2!="_"){print $2;exit}}' "$NGINX_SITE" 2>/dev/null || true
+}
+
+set_env_value(){
+  local key="$1" value="$2"
+  [[ -f "$ENV_FILE" ]] || return 0
+  if grep -q "^${key}=" "$ENV_FILE"; then
+    sed -i "s#^${key}=.*#${key}=${value}#" "$ENV_FILE"
+  else
+    echo "${key}=${value}" >> "$ENV_FILE"
+  fi
+}
+
 [[ ${EUID} -eq 0 ]] || fail "请使用 root 运行：bash install.sh"
 [[ -d "$SCRIPT_DIR/app" && -f "$SCRIPT_DIR/run.py" && -f "$SCRIPT_DIR/requirements.txt" ]] || fail "请在 XVPN Panel 发布目录内运行 install.sh"
 
@@ -41,12 +62,18 @@ ok "系统依赖完成"
 FRESH=0
 if [[ ! -f "$ENV_FILE" || ! -f "$DATA_DIR/panel.db" ]]; then FRESH=1; fi
 
-DOMAIN=""
-if [[ -f "$NGINX_SITE" ]]; then
-  DOMAIN="$(awk '/^[[:space:]]*server_name[[:space:]]+/ {gsub(/;/,"",$2);if($2!="_"){print $2;exit}}' "$NGINX_SITE" 2>/dev/null || true)"
+# Recover the chosen domain after an interrupted installation. New v1 installs
+# persist PANEL_DOMAIN in the env file before Nginx/Certbot work begins.
+DOMAIN="$(env_value PANEL_DOMAIN)"
+if [[ -z "$DOMAIN" ]]; then DOMAIN="$(nginx_domain)"; fi
+if [[ -n "$DOMAIN" && ! "$DOMAIN" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$ ]]; then
+  warn "检测到无效的历史域名配置，将重新询问域名。"
+  DOMAIN=""
 fi
 
-if [[ "$FRESH" == "1" ]]; then
+# Fresh installs ask for a domain. An interrupted install also asks again when
+# no Nginx site was ever created, so rerunning the same command can recover.
+if [[ "$FRESH" == "1" || ( -z "$DOMAIN" && ! -f "$NGINX_SITE" ) ]]; then
   info "[2/7] 配置访问域名"
   PUBLIC_IP="$(curl -4fsS --max-time 8 https://api.ipify.org 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}')"
   [[ -n "$PUBLIC_IP" ]] && echo "当前服务器 IPv4：$PUBLIC_IP"
@@ -61,10 +88,15 @@ if [[ "$FRESH" == "1" ]]; then
     echo "请确认 DNS A 记录：$DOMAIN -> ${PUBLIC_IP:-服务器公网 IPv4}"
     read -r -p "DNS 已设置好后按 Enter 继续..." _
   else
+    DOMAIN=""
     warn "已跳过域名，先使用 HTTP。以后执行 xvpn domain 配置 HTTPS。"
   fi
 else
-  info "[2/7] 检测到现有 v1 数据，将保留数据库和安全配置"
+  if [[ -n "$DOMAIN" ]]; then
+    info "[2/7] 检测到现有域名 $DOMAIN，将继续完成/保留当前配置"
+  else
+    info "[2/7] 检测到现有 v1 数据，将保留当前 HTTP 配置"
+  fi
 fi
 
 info "[3/7] 准备程序目录"
@@ -120,6 +152,7 @@ DATABASE_PATH=$DATA_DIR/panel.db
 ADMIN_PASSWORD=$ADMIN_PASSWORD
 PANEL_NAME=XVPN Panel
 PANEL_SUBTITLE=私人访问控制台
+PANEL_DOMAIN=$DOMAIN
 ADMIN_ALLOWED_IPS=
 TRUST_PROXY=1
 TOKEN_DAYS=30
@@ -131,6 +164,7 @@ else
   grep -q '^DATABASE_PATH=' "$ENV_FILE" && sed -i "s#^DATABASE_PATH=.*#DATABASE_PATH=$DATA_DIR/panel.db#" "$ENV_FILE" || echo "DATABASE_PATH=$DATA_DIR/panel.db" >> "$ENV_FILE"
   grep -q '^TRUST_PROXY=' "$ENV_FILE" || echo 'TRUST_PROXY=1' >> "$ENV_FILE"
   grep -q '^XVPN_ANDROID_REPOSITORY=' "$ENV_FILE" || echo 'XVPN_ANDROID_REPOSITORY=kkx999/XVPN-Android' >> "$ENV_FILE"
+  set_env_value PANEL_DOMAIN "$DOMAIN"
   chmod 600 "$ENV_FILE"
 fi
 ok "安全配置完成"
@@ -198,13 +232,26 @@ systemctl daemon-reload
 systemctl enable xvpn-panel xvpn-panel-backup.timer >/dev/null
 systemctl restart xvpn-panel
 systemctl restart xvpn-panel-backup.timer
-sleep 2
-systemctl is-active --quiet xvpn-panel || { journalctl -u xvpn-panel -n 100 --no-pager; fail "Panel 服务启动失败"; }
-curl -fsS "http://127.0.0.1:$APP_PORT/api/v1/health" >/dev/null || fail "Panel 健康检查失败"
+
+HEALTH_OK=0
+for _ in $(seq 1 20); do
+  if curl -fsS --connect-timeout 1 --max-time 2 "http://127.0.0.1:$APP_PORT/api/v1/health" >/dev/null 2>&1; then
+    HEALTH_OK=1
+    break
+  fi
+  sleep 1
+done
+if [[ "$HEALTH_OK" != "1" ]]; then
+  systemctl status xvpn-panel --no-pager 2>/dev/null || true
+  journalctl -u xvpn-panel -n 100 --no-pager 2>/dev/null || true
+  fail "Panel 在 20 秒内未通过健康检查"
+fi
+systemctl is-active --quiet xvpn-panel || { journalctl -u xvpn-panel -n 100 --no-pager; fail "Panel 服务未保持运行"; }
 ok "Panel 服务运行正常"
 
 info "[6/7] 配置 Nginx"
-if [[ ! -f "$NGINX_SITE" || "$FRESH" == "1" ]]; then
+CURRENT_NGINX_DOMAIN="$(nginx_domain)"
+if [[ ! -f "$NGINX_SITE" || "$FRESH" == "1" || ( -n "$DOMAIN" && "$CURRENT_NGINX_DOMAIN" != "$DOMAIN" ) ]]; then
   SERVER_NAME="${DOMAIN:-_}"
   cat > "$NGINX_SITE" <<EOF
 server {
@@ -231,16 +278,30 @@ ln -sfn "$NGINX_SITE" "$NGINX_LINK"
 rm -f /etc/nginx/sites-enabled/default
 nginx -t
 systemctl reload nginx
+
+NGINX_HOST="${DOMAIN:-localhost}"
+if ! curl -fsS --connect-timeout 2 --max-time 5 -H "Host: $NGINX_HOST" "http://127.0.0.1/api/v1/health" >/dev/null 2>&1; then
+  nginx -T 2>/dev/null | tail -n 120 || true
+  fail "Nginx 反向代理健康检查失败"
+fi
 ok "Nginx 配置完成"
 
 info "[7/7] HTTPS 与最终检查"
-if [[ -n "$DOMAIN" && "$FRESH" == "1" ]]; then
-  if certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email --redirect; then
-    grep -q '^COOKIE_SECURE=' "$ENV_FILE" && sed -i 's/^COOKIE_SECURE=.*/COOKIE_SECURE=1/' "$ENV_FILE" || echo 'COOKIE_SECURE=1' >> "$ENV_FILE"
+if [[ -n "$DOMAIN" ]]; then
+  if [[ -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]] && grep -q 'ssl_certificate' "$NGINX_SITE" 2>/dev/null; then
+    set_env_value COOKIE_SECURE 1
     systemctl restart xvpn-panel
-    ok "HTTPS 已启用"
+    ok "检测到现有 HTTPS 配置，已继续使用"
   else
-    warn "HTTPS 自动申请失败；Panel 已通过 HTTP 运行，可稍后执行 xvpn domain。"
+    if certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email --redirect; then
+      set_env_value COOKIE_SECURE 1
+      systemctl restart xvpn-panel
+      ok "HTTPS 已启用"
+    else
+      set_env_value COOKIE_SECURE 0
+      systemctl restart xvpn-panel
+      warn "HTTPS 自动申请失败；Panel 已通过 HTTP 运行，可稍后执行 xvpn domain。"
+    fi
   fi
 fi
 
