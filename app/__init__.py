@@ -40,6 +40,7 @@ def create_app():
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
     app.config["SESSION_COOKIE_SECURE"] = os.environ.get("COOKIE_SECURE", "0") == "1"
     app.config["DATABASE_PATH"] = os.environ.get("DATABASE_PATH", "./data/panel.db")
+    app.config["BACKUP_DIR"] = os.environ.get("BACKUP_DIR", "/var/backups/xvpn-panel")
     app.config["FERNET_KEY"] = os.environ.get("FERNET_KEY", "")
     app.config["ANDROID_UPDATE_REPOSITORY"] = os.environ.get(
         "XVPN_ANDROID_REPOSITORY", "kkx999/XVPN-Android"
