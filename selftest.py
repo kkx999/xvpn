@@ -45,6 +45,8 @@ def main():
 
         from app import create_app
         from app.admin_v1 import _canonical
+        from app.crypto import encrypt_text
+        from app.db import connect, utcnow
         from app.settings_store import set_settings
 
         samples = [
@@ -56,12 +58,14 @@ def main():
             vmess_sample(),
         ]
         protocols = []
+        canonical_samples = []
         for raw in samples:
             profile, canonical = _canonical(raw)
             require(profile["schema"] == "xvpn.node.v1", "node schema mismatch")
             require(profile["server"] and 1 <= int(profile["port"]) <= 65535, "node endpoint invalid")
             require(json.loads(canonical)["protocol"] == profile["protocol"], "canonical JSON mismatch")
             protocols.append(profile["protocol"])
+            canonical_samples.append(canonical)
         require(protocols == ["vless", "trojan", "hysteria2", "tuic", "shadowsocks", "vmess"], "protocol parser mismatch")
 
         try:
@@ -76,9 +80,81 @@ def main():
         client = app.test_client()
         health = client.get("/api/v1/health")
         require(health.status_code == 200, "health endpoint failed")
-        require((health.get_json() or {}).get("version") == "1.0.0", "panel version mismatch")
+        health_json = health.get_json() or {}
+        require(health_json.get("version") == "1.0.0", "panel version mismatch")
+        require(health_json.get("core") == "mihomo", "health core mismatch")
         require(client.get("/admin/login").status_code == 200, "default admin path failed")
         require(client.get("/not-admin/login").status_code == 404, "unexpected admin alias exposed")
+
+        with app.app_context():
+            now = utcnow()
+            with connect() as conn:
+                conn.execute(
+                    "INSERT INTO invites(code,status,max_uses,use_count,created_at) VALUES(?,?,?,?,?)",
+                    ("SELFTEST", "active", 1, 0, now),
+                )
+                conn.execute(
+                    "INSERT INTO country_orders(country_code,sort_order,updated_at) VALUES(?,?,?)",
+                    ("HK", 10, now),
+                )
+                conn.execute(
+                    """INSERT INTO nodes(name,original_name,country,country_code,region,protocol,config_enc,sort_order,status,created_at,updated_at)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        "香港01", "VLESS-Reality", "香港", "HK", "", "vless",
+                        encrypt_text(app, canonical_samples[0]), 100, "enabled", now, now,
+                    ),
+                )
+                conn.commit()
+
+        register = client.post("/api/v1/register", json={
+            "invite_code": "SELFTEST",
+            "username": "selftest-user",
+            "password": "UserPassword123",
+        })
+        require(register.status_code == 201 and (register.get_json() or {}).get("ok") is True, "register API failed")
+
+        login = client.post("/api/v1/login", json={"username": "selftest-user", "password": "UserPassword123"})
+        login_json = login.get_json() or {}
+        require(login.status_code == 200 and login_json.get("token"), "login API failed")
+        auth = {"Authorization": "Bearer " + login_json["token"]}
+
+        nodes = client.get("/api/v1/nodes", headers=auth)
+        nodes_json = nodes.get_json() or {}
+        require(nodes.status_code == 200 and nodes_json.get("core") == "mihomo", "nodes API failed")
+        require(nodes_json.get("node_schema") == "xvpn.node.v1" and nodes_json.get("total") == 1, "nodes schema/count mismatch")
+        node = nodes_json["countries"][0]["nodes"][0]
+        require(node.get("profile", {}).get("protocol") == "vless", "node profile missing")
+        require("config" not in node, "legacy raw config field leaked")
+
+        bootstrap = client.get("/api/v1/app/bootstrap", headers=auth)
+        bootstrap_json = bootstrap.get_json() or {}
+        require(bootstrap.status_code == 200 and bootstrap_json.get("core") == "mihomo", "bootstrap API failed")
+        require((bootstrap_json.get("nodes") or {}).get("node_schema") == "xvpn.node.v1", "bootstrap node schema mismatch")
+
+        report1 = client.post("/api/v1/traffic/report", headers=auth, json={
+            "device_id": "device-selftest-01",
+            "session_id": "session-selftest-01",
+            "node_id": node["id"],
+            "upload_total_bytes": 100,
+            "download_total_bytes": 200,
+            "app_version": "1.0.0",
+        })
+        r1 = report1.get_json() or {}
+        require(report1.status_code == 200 and r1.get("baseline_reset") is True, "traffic baseline failed")
+
+        report2 = client.post("/api/v1/traffic/report", headers=auth, json={
+            "device_id": "device-selftest-01",
+            "session_id": "session-selftest-01",
+            "node_id": node["id"],
+            "upload_total_bytes": 150,
+            "download_total_bytes": 260,
+            "app_version": "1.0.0",
+        })
+        r2 = report2.get_json() or {}
+        require(report2.status_code == 200, "traffic delta report failed")
+        require((r2.get("delta") or {}).get("upload_bytes") == 50, "traffic upload delta mismatch")
+        require((r2.get("delta") or {}).get("download_bytes") == 60, "traffic download delta mismatch")
 
         with app.app_context():
             set_settings({"admin_path": "manage-xvpn"})
