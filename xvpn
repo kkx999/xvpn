@@ -7,11 +7,14 @@ ENV_FILE="/etc/xvpn-panel.env"
 BACKUP_DIR="/var/backups/xvpn-panel"
 NGINX_SITE="/etc/nginx/sites-available/xvpn-panel"
 RELEASE_REPO="kkx999/xvpn"
+APP_PORT=26818
 
 need_root(){ [[ ${EUID} -eq 0 ]] || { echo "[ERROR] 请使用 root 运行 xvpn。" >&2; exit 1; }; }
 current_version(){ [[ -f "$APP_DIR/VERSION" ]] && tr -d '[:space:]' < "$APP_DIR/VERSION" || echo unknown; }
 current_domain(){ [[ -f "$NGINX_SITE" ]] && awk '/^[[:space:]]*server_name[[:space:]]+/ {gsub(/;/,"",$2);if($2!="_"){print $2;exit}}' "$NGINX_SITE" 2>/dev/null || true; }
 database_path(){ awk -F= '/^DATABASE_PATH=/{print substr($0,index($0,"=")+1);exit}' "$ENV_FILE" 2>/dev/null || true; }
+env_value(){ local key="$1"; [[ -f "$ENV_FILE" ]] && awk -v k="$key" 'index($0,k"=")==1 {sub(/^[^=]*=/,""); print; exit}' "$ENV_FILE" 2>/dev/null || true; }
+panel_scheme(){ [[ "$(env_value COOKIE_SECURE)" == "1" ]] && echo https || echo http; }
 
 admin_path(){
   local db value
@@ -23,22 +26,33 @@ admin_path(){
   echo "$value"
 }
 
+wait_panel_health(){
+  local i
+  for i in $(seq 1 20); do
+    if curl -fsS --connect-timeout 1 --max-time 2 "http://127.0.0.1:$APP_PORT/api/v1/health" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
 restart_panel(){
   need_root
   systemctl restart xvpn-panel
-  sleep 1
-  if systemctl is-active --quiet xvpn-panel; then
-    echo "[OK] XVPN Panel 已重启。"
+  if systemctl is-active --quiet xvpn-panel && wait_panel_health; then
+    echo "[OK] XVPN Panel 已重启并通过健康检查。"
   else
-    echo "[ERROR] Panel 重启失败。" >&2
-    journalctl -u xvpn-panel -n 80 --no-pager
+    echo "[ERROR] Panel 重启后未通过健康检查。" >&2
+    systemctl status xvpn-panel --no-pager 2>/dev/null || true
+    journalctl -u xvpn-panel -n 80 --no-pager 2>/dev/null || true
     return 1
   fi
 }
 
 set_admin_path(){
   need_root
-  local value="${1:-}" db domain escaped
+  local value="${1:-}" db domain escaped scheme
   value="${value#/}"; value="${value%/}"
   [[ "$value" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{2,47}$ ]] || { echo "[ERROR] 后台路径需为 3-48 位字母、数字、- 或 _。" >&2; return 2; }
   case "${value,,}" in api|static|assets|health) echo "[ERROR] 该路径为系统保留路径。" >&2; return 2;; esac
@@ -49,8 +63,9 @@ set_admin_path(){
   chown xvpn-panel:xvpn-panel "$db" 2>/dev/null || true
   restart_panel
   domain="$(current_domain)"
+  scheme="$(panel_scheme)"
   if [[ -n "$domain" ]]; then
-    echo "[OK] 新后台：https://$domain/$value/login"
+    echo "[OK] 新后台：$scheme://$domain/$value/login"
   else
     echo "[OK] 新后台路径：/$value/login"
   fi
