@@ -23,6 +23,15 @@ current_admin_path(){
   value="${value:-admin}"; value="${value#/}"; value="${value%/}"
   echo "$value"
 }
+set_env_value(){
+  local key="$1" value="$2"
+  [[ -f "$ENV_FILE" ]] || return 0
+  if grep -q "^${key}=" "$ENV_FILE"; then
+    sed -i "s#^${key}=.*#${key}=${value}#" "$ENV_FILE"
+  else
+    echo "${key}=${value}" >> "$ENV_FILE"
+  fi
+}
 
 clear || true
 say "${C_BOLD}${C_BLUE}XVPN Panel 域名 / HTTPS${C_RESET}"
@@ -114,10 +123,18 @@ if ! nginx -t; then
 fi
 systemctl reload nginx
 
+if ! curl -fsS --connect-timeout 2 --max-time 5 -H "Host: $DOMAIN" "http://127.0.0.1/api/v1/health" >/dev/null 2>&1; then
+  [[ -f "$BACKUP" ]] && cp -a "$BACKUP" "$NGINX_SITE"
+  nginx -t >/dev/null 2>&1 && systemctl reload nginx || true
+  err "Nginx 反向代理健康检查失败，已恢复原配置。"
+  exit 1
+fi
+
 info "正在为 $DOMAIN 申请 HTTPS 证书..."
 if certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email --redirect; then
   if [[ -f "$ENV_FILE" ]]; then
-    grep -q '^COOKIE_SECURE=' "$ENV_FILE" && sed -i 's/^COOKIE_SECURE=.*/COOKIE_SECURE=1/' "$ENV_FILE" || echo 'COOKIE_SECURE=1' >> "$ENV_FILE"
+    set_env_value PANEL_DOMAIN "$DOMAIN"
+    set_env_value COOKIE_SECURE 1
     chmod 600 "$ENV_FILE"
   fi
   systemctl restart xvpn-panel
