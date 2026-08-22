@@ -40,6 +40,50 @@ set_env_value(){
   fi
 }
 
+wait_panel_health(){
+  local i
+  for i in $(seq 1 20); do
+    if curl -fsS --connect-timeout 1 --max-time 2 "http://127.0.0.1:$APP_PORT/api/v1/health" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+wait_http_proxy(){
+  local host="$1" i
+  for i in $(seq 1 15); do
+    if curl -fsS --connect-timeout 1 --max-time 3 -H "Host: $host" "http://127.0.0.1/api/v1/health" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+wait_https_proxy(){
+  local domain="$1" i
+  for i in $(seq 1 20); do
+    if curl -fsS --connect-timeout 2 --max-time 5 --resolve "$domain:443:127.0.0.1" "https://$domain/api/v1/health" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+restore_nginx_site(){
+  local backup="$1"
+  if [[ -n "$backup" && -f "$backup" ]]; then
+    cp -a "$backup" "$NGINX_SITE"
+    ln -sfn "$NGINX_SITE" "$NGINX_LINK"
+  else
+    rm -f "$NGINX_SITE" "$NGINX_LINK"
+  fi
+  nginx -t >/dev/null 2>&1 && systemctl reload nginx || true
+}
+
 [[ ${EUID} -eq 0 ]] || fail "请使用 root 运行：bash install.sh"
 [[ -d "$SCRIPT_DIR/app" && -f "$SCRIPT_DIR/run.py" && -f "$SCRIPT_DIR/requirements.txt" ]] || fail "请在 XVPN Panel 发布目录内运行 install.sh"
 
@@ -62,8 +106,6 @@ ok "系统依赖完成"
 FRESH=0
 if [[ ! -f "$ENV_FILE" || ! -f "$DATA_DIR/panel.db" ]]; then FRESH=1; fi
 
-# Recover the chosen domain after an interrupted installation. New v1 installs
-# persist PANEL_DOMAIN in the env file before Nginx/Certbot work begins.
 DOMAIN="$(env_value PANEL_DOMAIN)"
 if [[ -z "$DOMAIN" ]]; then DOMAIN="$(nginx_domain)"; fi
 if [[ -n "$DOMAIN" && ! "$DOMAIN" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$ ]]; then
@@ -71,8 +113,6 @@ if [[ -n "$DOMAIN" && ! "$DOMAIN" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-
   DOMAIN=""
 fi
 
-# Fresh installs ask for a domain. An interrupted install also asks again when
-# no Nginx site was ever created, so rerunning the same command can recover.
 if [[ "$FRESH" == "1" || ( -z "$DOMAIN" && ! -f "$NGINX_SITE" ) ]]; then
   info "[2/7] 配置访问域名"
   PUBLIC_IP="$(curl -4fsS --max-time 8 https://api.ipify.org 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}')"
@@ -130,7 +170,7 @@ python3 -m venv "$APP_DIR/.venv"
 
 info "运行 v$VERSION 内置自检"
 (cd "$APP_DIR" && "$APP_DIR/.venv/bin/python" selftest.py) || fail "内置自检失败，已停止安装，不会启动此版本"
-ok "代码、路由、后台路径与 Mihomo 节点解析自检通过"
+ok "代码、路由、后台路径、API 与 Mihomo 节点解析自检通过"
 
 ADMIN_PASSWORD=""
 if [[ ! -f "$ENV_FILE" ]]; then
@@ -233,15 +273,7 @@ systemctl enable xvpn-panel xvpn-panel-backup.timer >/dev/null
 systemctl restart xvpn-panel
 systemctl restart xvpn-panel-backup.timer
 
-HEALTH_OK=0
-for _ in $(seq 1 20); do
-  if curl -fsS --connect-timeout 1 --max-time 2 "http://127.0.0.1:$APP_PORT/api/v1/health" >/dev/null 2>&1; then
-    HEALTH_OK=1
-    break
-  fi
-  sleep 1
-done
-if [[ "$HEALTH_OK" != "1" ]]; then
+if ! wait_panel_health; then
   systemctl status xvpn-panel --no-pager 2>/dev/null || true
   journalctl -u xvpn-panel -n 100 --no-pager 2>/dev/null || true
   fail "Panel 在 20 秒内未通过健康检查"
@@ -251,7 +283,13 @@ ok "Panel 服务运行正常"
 
 info "[6/7] 配置 Nginx"
 CURRENT_NGINX_DOMAIN="$(nginx_domain)"
+NGINX_CHANGED=0
+NGINX_BACKUP=""
 if [[ ! -f "$NGINX_SITE" || "$FRESH" == "1" || ( -n "$DOMAIN" && "$CURRENT_NGINX_DOMAIN" != "$DOMAIN" ) ]]; then
+  if [[ -f "$NGINX_SITE" ]]; then
+    NGINX_BACKUP="/tmp/xvpn-panel-nginx-install-$(date +%Y%m%d-%H%M%S).conf"
+    cp -a "$NGINX_SITE" "$NGINX_BACKUP"
+  fi
   SERVER_NAME="${DOMAIN:-_}"
   cat > "$NGINX_SITE" <<EOF
 server {
@@ -273,52 +311,57 @@ server {
     }
 }
 EOF
+  NGINX_CHANGED=1
 fi
 ln -sfn "$NGINX_SITE" "$NGINX_LINK"
 rm -f /etc/nginx/sites-enabled/default
-nginx -t
+if ! nginx -t; then
+  [[ "$NGINX_CHANGED" == "1" ]] && restore_nginx_site "$NGINX_BACKUP"
+  fail "Nginx 配置语法检查失败"
+fi
 systemctl reload nginx
 
 NGINX_HOST="${DOMAIN:-localhost}"
-NGINX_OK=0
-for _ in $(seq 1 15); do
-  if curl -fsS --connect-timeout 1 --max-time 3 -H "Host: $NGINX_HOST" "http://127.0.0.1/api/v1/health" >/dev/null 2>&1; then
-    NGINX_OK=1
-    break
-  fi
-  sleep 1
-done
-
-if [[ "$NGINX_OK" != "1" ]]; then
-  warn "Nginx reload 后暂未通过反向代理检查，正在自动重启 Nginx 后重试..."
+if ! wait_http_proxy "$NGINX_HOST"; then
+  warn "Nginx reload 后暂未就绪，正在重启并重试..."
   systemctl restart nginx
-  for _ in $(seq 1 10); do
-    if curl -fsS --connect-timeout 1 --max-time 3 -H "Host: $NGINX_HOST" "http://127.0.0.1/api/v1/health" >/dev/null 2>&1; then
-      NGINX_OK=1
-      break
-    fi
-    sleep 1
-  done
-fi
-
-if [[ "$NGINX_OK" != "1" ]]; then
-  systemctl status nginx --no-pager 2>/dev/null || true
-  nginx -T 2>/dev/null | tail -n 120 || true
-  fail "Nginx 反向代理在重试后仍未通过健康检查"
+  if ! wait_http_proxy "$NGINX_HOST"; then
+    systemctl status nginx --no-pager 2>/dev/null || true
+    nginx -T 2>/dev/null | tail -n 120 || true
+    [[ "$NGINX_CHANGED" == "1" ]] && restore_nginx_site "$NGINX_BACKUP"
+    fail "Nginx 反向代理在重试后仍未通过健康检查"
+  fi
 fi
 ok "Nginx 配置完成"
 
 info "[7/7] HTTPS 与最终检查"
 if [[ -n "$DOMAIN" ]]; then
+  HTTPS_OK=0
   if [[ -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]] && grep -q 'ssl_certificate' "$NGINX_SITE" 2>/dev/null; then
     set_env_value COOKIE_SECURE 1
     systemctl restart xvpn-panel
-    ok "检测到现有 HTTPS 配置，已继续使用"
-  else
+    if wait_https_proxy "$DOMAIN"; then
+      HTTPS_OK=1
+      ok "检测到现有 HTTPS 配置并验证通过"
+    else
+      warn "检测到现有证书，但 HTTPS 未通过验证，将让 Certbot 重新部署配置。"
+    fi
+  fi
+
+  if [[ "$HTTPS_OK" != "1" ]]; then
     if certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email --redirect; then
       set_env_value COOKIE_SECURE 1
+      set_env_value PANEL_DOMAIN "$DOMAIN"
       systemctl restart xvpn-panel
-      ok "HTTPS 已启用"
+      systemctl enable --now certbot.timer >/dev/null 2>&1 || true
+      if wait_https_proxy "$DOMAIN"; then
+        HTTPS_OK=1
+        ok "HTTPS 已启用并验证通过"
+      else
+        systemctl status nginx --no-pager 2>/dev/null || true
+        systemctl status xvpn-panel --no-pager 2>/dev/null || true
+        fail "Certbot 已执行，但本机 HTTPS 健康检查仍未通过"
+      fi
     else
       set_env_value COOKIE_SECURE 0
       systemctl restart xvpn-panel
