@@ -280,9 +280,31 @@ nginx -t
 systemctl reload nginx
 
 NGINX_HOST="${DOMAIN:-localhost}"
-if ! curl -fsS --connect-timeout 2 --max-time 5 -H "Host: $NGINX_HOST" "http://127.0.0.1/api/v1/health" >/dev/null 2>&1; then
+NGINX_OK=0
+for _ in $(seq 1 15); do
+  if curl -fsS --connect-timeout 1 --max-time 3 -H "Host: $NGINX_HOST" "http://127.0.0.1/api/v1/health" >/dev/null 2>&1; then
+    NGINX_OK=1
+    break
+  fi
+  sleep 1
+done
+
+if [[ "$NGINX_OK" != "1" ]]; then
+  warn "Nginx reload 后暂未通过反向代理检查，正在自动重启 Nginx 后重试..."
+  systemctl restart nginx
+  for _ in $(seq 1 10); do
+    if curl -fsS --connect-timeout 1 --max-time 3 -H "Host: $NGINX_HOST" "http://127.0.0.1/api/v1/health" >/dev/null 2>&1; then
+      NGINX_OK=1
+      break
+    fi
+    sleep 1
+  done
+fi
+
+if [[ "$NGINX_OK" != "1" ]]; then
+  systemctl status nginx --no-pager 2>/dev/null || true
   nginx -T 2>/dev/null | tail -n 120 || true
-  fail "Nginx 反向代理健康检查失败"
+  fail "Nginx 反向代理在重试后仍未通过健康检查"
 fi
 ok "Nginx 配置完成"
 
