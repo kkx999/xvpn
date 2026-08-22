@@ -15,6 +15,14 @@ current_domain(){
   awk '/^[[:space:]]*server_name[[:space:]]+/ {gsub(/;/, "", $2); if ($2 != "_") {print $2; exit}}' "$NGINX_SITE" 2>/dev/null || true
 }
 valid_domain(){ [[ "$1" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$ ]]; }
+current_admin_path(){
+  local db value
+  db="$(awk -F= '/^DATABASE_PATH=/{print substr($0,index($0,"=")+1);exit}' "$ENV_FILE" 2>/dev/null || true)"
+  db="${db:-/var/lib/xvpn-panel/panel.db}"
+  value="$(sqlite3 "$db" "SELECT value FROM system_settings WHERE key='admin_path' LIMIT 1;" 2>/dev/null | head -n1 || true)"
+  value="${value:-admin}"; value="${value#/}"; value="${value%/}"
+  echo "$value"
+}
 
 clear || true
 say "${C_BOLD}${C_BLUE}XVPN Panel 域名 / HTTPS${C_RESET}"
@@ -114,9 +122,10 @@ if certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --register-unsafel
   fi
   systemctl restart xvpn-panel
   systemctl enable --now certbot.timer >/dev/null 2>&1 || true
+  ADMIN_PATH="$(current_admin_path)"
   ok "域名与 HTTPS 配置完成"
   echo
-  say "后台：${C_CYAN}https://$DOMAIN/admin/login${C_RESET}"
+  say "后台：${C_CYAN}https://$DOMAIN/$ADMIN_PATH/login${C_RESET}"
   say "API： ${C_CYAN}https://$DOMAIN/api/v1${C_RESET}"
   [[ "$USE_CF" == "1" ]] && say "Cloudflare：保持小云朵开启，并使用 ${C_BOLD}Full (strict)${C_RESET}。"
 else
