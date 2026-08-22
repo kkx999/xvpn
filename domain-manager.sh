@@ -32,6 +32,26 @@ set_env_value(){
     echo "${key}=${value}" >> "$ENV_FILE"
   fi
 }
+wait_http_proxy(){
+  local domain="$1" i
+  for i in $(seq 1 15); do
+    if curl -fsS --connect-timeout 1 --max-time 3 -H "Host: $domain" "http://127.0.0.1/api/v1/health" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+wait_https_proxy(){
+  local domain="$1" i
+  for i in $(seq 1 20); do
+    if curl -fsS --connect-timeout 2 --max-time 5 --resolve "$domain:443:127.0.0.1" "https://$domain/api/v1/health" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
 
 clear || true
 say "${C_BOLD}${C_BLUE}XVPN Panel 域名 / HTTPS${C_RESET}"
@@ -99,7 +119,7 @@ server {
     listen [::]:80;
     server_name $DOMAIN;
 
-    client_max_body_size 52m;
+    client_max_body_size 55m;
 
     location / {
         proxy_pass http://127.0.0.1:$APP_PORT;
@@ -116,29 +136,40 @@ NGINX
 ln -sfn "$NGINX_SITE" "$NGINX_LINK"
 rm -f /etc/nginx/sites-enabled/default
 if ! nginx -t; then
-  [[ -f "$BACKUP" ]] && cp -a "$BACKUP" "$NGINX_SITE"
+  if [[ -f "$BACKUP" ]]; then cp -a "$BACKUP" "$NGINX_SITE"; else rm -f "$NGINX_SITE" "$NGINX_LINK"; fi
   nginx -t >/dev/null 2>&1 || true
   err "Nginx 配置检查失败，已恢复原配置。"
   exit 1
 fi
 systemctl reload nginx
 
-if ! curl -fsS --connect-timeout 2 --max-time 5 -H "Host: $DOMAIN" "http://127.0.0.1/api/v1/health" >/dev/null 2>&1; then
-  [[ -f "$BACKUP" ]] && cp -a "$BACKUP" "$NGINX_SITE"
-  nginx -t >/dev/null 2>&1 && systemctl reload nginx || true
-  err "Nginx 反向代理健康检查失败，已恢复原配置。"
-  exit 1
+if ! wait_http_proxy "$DOMAIN"; then
+  warn "Nginx reload 后暂未就绪，正在重启并重试..."
+  systemctl restart nginx
+  if ! wait_http_proxy "$DOMAIN"; then
+    if [[ -f "$BACKUP" ]]; then cp -a "$BACKUP" "$NGINX_SITE"; else rm -f "$NGINX_SITE" "$NGINX_LINK"; fi
+    nginx -t >/dev/null 2>&1 && systemctl reload nginx || true
+    err "Nginx 反向代理健康检查失败，已恢复原配置。"
+    exit 1
+  fi
 fi
+ok "Nginx 反向代理正常"
 
 info "正在为 $DOMAIN 申请 HTTPS 证书..."
 if certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email --redirect; then
-  if [[ -f "$ENV_FILE" ]]; then
-    set_env_value PANEL_DOMAIN "$DOMAIN"
-    set_env_value COOKIE_SECURE 1
-    chmod 600 "$ENV_FILE"
-  fi
+  set_env_value PANEL_DOMAIN "$DOMAIN"
+  set_env_value COOKIE_SECURE 1
+  chmod 600 "$ENV_FILE" 2>/dev/null || true
   systemctl restart xvpn-panel
   systemctl enable --now certbot.timer >/dev/null 2>&1 || true
+
+  if ! wait_https_proxy "$DOMAIN"; then
+    systemctl status nginx --no-pager 2>/dev/null || true
+    systemctl status xvpn-panel --no-pager 2>/dev/null || true
+    err "证书已申请，但本机 HTTPS 健康检查未通过。请检查上方状态后再重试。"
+    exit 1
+  fi
+
   ADMIN_PATH="$(current_admin_path)"
   ok "域名与 HTTPS 配置完成"
   echo
