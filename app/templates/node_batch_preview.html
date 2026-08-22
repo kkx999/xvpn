@@ -15,7 +15,7 @@
         {% for item in preview %}
           <tr>
             <td>{{ loop.index }}</td>
-            <td><strong>{{ item.original_name }}</strong><input type="hidden" name="config" value="{{ item.config }}"></td>
+            <td><strong>{{ item.original_name }}</strong><input type="hidden" name="original_name" value="{{ item.original_name }}"><input type="hidden" name="config" value="{{ item.config }}"></td>
             <td><input class="table-input" name="display_name" value="{{ item.display_name }}" required></td>
             <td><div class="protocol-stack">{% for detail in item.protocol_details %}<span class="badge {{ 'blue' if loop.first else 'soft' }}">{{ detail }}</span>{% endfor %}</div></td>
             <td><input class="table-input small" name="sort_order" type="number" value="{{ item.sort_order }}"></td>
