@@ -16,7 +16,7 @@ case "${1:-}" in
   "") ;;
   --version|-v) REQUESTED="${2:-}"; [[ -n "$REQUESTED" ]] || fail "缺少版本号。" ;;
   v*|[0-9]*) REQUESTED="$1" ;;
-  *) fail "用法：install-online.sh [--version v1.2.1]" ;;
+  *) fail "用法：install-online.sh [--version v1.0.0]" ;;
 esac
 
 if ! command -v curl >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1 || ! command -v sha256sum >/dev/null 2>&1; then
@@ -26,17 +26,15 @@ fi
 
 normalize_version(){ local v="${1#v}"; v="${v#V}"; echo "$v"; }
 valid_version(){ [[ "$1" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([._-]?[A-Za-z]+([._-]?[0-9]+)?)?$ ]]; }
-current_version(){
-  if [[ -f /opt/xvpn-panel/VERSION ]]; then tr -d '[:space:]' < /opt/xvpn-panel/VERSION
-  elif [[ -f /opt/vpn-panel/VERSION ]]; then tr -d '[:space:]' < /opt/vpn-panel/VERSION
-  fi
-}
+current_version(){ [[ -f /opt/xvpn-panel/VERSION ]] && tr -d '[:space:]' < /opt/xvpn-panel/VERSION || true; }
 version_compare(){ python3 - "$1" "$2" <<'PY'
 import re,sys
 def k(v):
  v=v.strip().lstrip('vV'); m=re.fullmatch(r'(\d+)\.(\d+)\.(\d+)(?:[-._]?([A-Za-z]+)[-._]?(\d+)?)?',v)
  if not m:return None
- a,b,c=map(int,m.group(1,2,3)); label=(m.group(4) or '').lower(); n=int(m.group(5) or 0); rank={'dev':10,'alpha':20,'a':20,'beta':30,'b':30,'rc':40,'':100}.get(label,50); return a,b,c,rank,n,label
+ a,b,c=map(int,m.group(1,2,3)); label=(m.group(4) or '').lower(); n=int(m.group(5) or 0)
+ rank={'dev':10,'alpha':20,'a':20,'beta':30,'b':30,'rc':40,'':100}.get(label,50)
+ return a,b,c,rank,n,label
 A,B=k(sys.argv[1]),k(sys.argv[2])
 print('unknown' if A is None or B is None else 'newer' if A>B else 'same' if A==B else 'older')
 PY
@@ -49,7 +47,7 @@ echo "========================================"
 
 RELEASE_JSON="$TMP/release.json"
 if [[ -n "$REQUESTED" ]]; then
-  valid_version "$REQUESTED" || fail "版本格式无效，例如 v1.2.1。"
+  valid_version "$REQUESTED" || fail "版本格式无效，例如 v1.0.0。"
   TARGET_VERSION="$(normalize_version "$REQUESTED")"
   TAG="v$TARGET_VERSION"
   info "正在获取正式版本：$TAG"
@@ -62,7 +60,7 @@ fi
 curl -fsSL --connect-timeout 8 --max-time 20 \
   -H 'Accept: application/vnd.github+json' \
   "$API_URL" -o "$RELEASE_JSON" \
-  || fail "无法获取正式版本信息，请稍后重试。"
+  || fail "无法获取 XVPN Panel 正式 Release。当前仓库若还未发布 v1.0.0，请先使用源码包执行 bash install.sh。"
 
 readarray -t META < <(python3 - "$RELEASE_JSON" <<'PY'
 import json,sys
@@ -73,14 +71,9 @@ want=f'xvpn-panel-v{version}.zip'
 asset=''; sums=''
 for a in j.get('assets',[]):
     name=a.get('name','')
-    if name==want:
-        asset=a.get('browser_download_url','')
-    elif name=='SHA256SUMS.txt':
-        sums=a.get('browser_download_url','')
-print(tag)
-print(version)
-print(asset)
-print(sums)
+    if name==want: asset=a.get('browser_download_url','')
+    elif name=='SHA256SUMS.txt': sums=a.get('browser_download_url','')
+print(tag); print(version); print(asset); print(sums)
 PY
 )
 
@@ -98,7 +91,7 @@ if [[ -n "$REQUESTED" && "$(normalize_version "$REQUESTED")" != "$TARGET_VERSION
   fail "版本响应不匹配：请求 $(normalize_version "$REQUESTED")，返回 $TARGET_VERSION。"
 fi
 
-CUR="$(current_version || true)"
+CUR="$(current_version)"
 if [[ -z "$REQUESTED" && -n "$CUR" ]]; then
   CMP="$(version_compare "$TARGET_VERSION" "$CUR")"
   if [[ "$CMP" == "same" ]]; then
@@ -133,7 +126,7 @@ unzip -q "$ARCHIVE" -d "$TMP/src"
 INSTALL="$(find "$TMP/src" -maxdepth 5 -type f -name install.sh -print | head -n1)"
 [[ -n "$INSTALL" ]] || fail "安装包中未找到 install.sh。"
 DIR="$(dirname "$INSTALL")"
-[[ -f "$DIR/run.py" && -d "$DIR/app" && -f "$DIR/VERSION" && -f "$DIR/xvpn" ]] || fail "安装包结构不完整。"
+[[ -f "$DIR/run.py" && -d "$DIR/app" && -f "$DIR/VERSION" && -f "$DIR/xvpn" && -f "$DIR/selftest.py" ]] || fail "安装包结构不完整。"
 PACKAGE_VERSION="$(tr -d '[:space:]' < "$DIR/VERSION")"
 [[ "$PACKAGE_VERSION" == "$TARGET_VERSION" ]] || fail "版本不匹配：请求 v$TARGET_VERSION，包内为 v$PACKAGE_VERSION。"
 
@@ -143,7 +136,7 @@ if [[ -n "$REQUESTED" && -n "$CUR" && "$CUR" != "$TARGET_VERSION" ]]; then
     echo
     echo "当前版本：v$CUR"
     echo "目标版本：v$TARGET_VERSION"
-    warn "这是降级操作。安装器会先备份现有数据库，但旧版未必兼容新版数据库结构。"
+    warn "这是降级操作。安装器会先备份现有 v1 数据，但旧版本未必兼容较新的数据库结构。"
     read -r -p "确认继续？ [y/N]: " CONFIRM
     [[ "${CONFIRM,,}" == "y" || "${CONFIRM,,}" == "yes" ]] || { echo "已取消。"; exit 0; }
   fi
