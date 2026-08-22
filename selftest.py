@@ -3,9 +3,11 @@ import base64
 import json
 import os
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from cryptography.fernet import Fernet
+from flask import Flask
 
 
 def require(condition, message):
@@ -46,8 +48,21 @@ def main():
         from app import create_app
         from app.admin_v1 import _canonical
         from app.crypto import encrypt_text
-        from app.db import connect, utcnow
+        from app.db import bootstrap_admin, connect, init_db, utcnow
         from app.settings_store import set_settings
+
+        # Reproduce the first-boot race that can happen when multiple workers/processes
+        # enter bootstrap at the same time. Exactly one admin row must survive.
+        race_app = Flask("xvpn-bootstrap-selftest")
+        race_app.config["DATABASE_PATH"] = str(Path(tmp) / "bootstrap-race.db")
+        init_db(race_app)
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = [pool.submit(bootstrap_admin, race_app) for _ in range(8)]
+            for future in futures:
+                future.result()
+        with connect(race_app) as conn:
+            admin_count = int(conn.execute("SELECT COUNT(*) FROM admins").fetchone()[0])
+        require(admin_count == 1, "concurrent admin bootstrap created duplicate rows")
 
         samples = [
             "vless://11111111-1111-4111-8111-111111111111@vless.example.com:443?security=reality&sni=www.example.com&fp=chrome&pbk=PUBLIC_KEY_TEST&sid=abcd&flow=xtls-rprx-vision#VLESS-Reality",
