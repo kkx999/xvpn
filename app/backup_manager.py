@@ -13,11 +13,12 @@ from .db import connect, init_db
 from .settings_store import apply_settings
 from .version import APP_VERSION
 
-REQUIRED_TABLES = {"admins", "users", "invites", "nodes", "api_tokens"}
+BACKUP_FORMAT = 2
+REQUIRED_TABLES = {"admins", "users", "invites", "nodes", "api_tokens", "system_settings"}
 
 
 def backup_dir():
-    path = Path(current_app.config["DATABASE_PATH"]).resolve().parent / "backups"
+    path = Path(current_app.config["BACKUP_DIR"]).resolve()
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -34,8 +35,6 @@ def _safe_name(name: str):
     return name
 
 
-
-
 def _scrub_auth_state(path: Path):
     """Remove revocable authentication/runtime state from a backup database."""
     conn = sqlite3.connect(path)
@@ -44,7 +43,6 @@ def _scrub_auth_state(path: Path):
             try:
                 conn.execute(f"DELETE FROM {table}")
             except sqlite3.OperationalError:
-                # Older backups may not have every table yet.
                 pass
         conn.commit()
     finally:
@@ -67,12 +65,11 @@ def create_backup(kind="manual"):
         finally:
             dst.close()
             src.close()
-        # Authentication sessions are deliberately excluded. User App tokens,
-        # administrator App tokens and brute-force state must never travel with backups.
+
         _scrub_auth_state(tmp_db)
         sha = hashlib.sha256(tmp_db.read_bytes()).hexdigest()
         manifest = {
-            "format": 2,
+            "format": BACKUP_FORMAT,
             "service": "XVPN Panel",
             "version": APP_VERSION,
             "created_at": now.isoformat(timespec="seconds"),
@@ -85,23 +82,20 @@ def create_backup(kind="manual"):
         with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             zf.write(tmp_db, "panel.db")
             zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
-            # Including the key makes the archive portable. Restore re-encrypts sensitive
-            # fields with the destination instance key, so /etc/xvpn-panel.env need not match.
             zf.writestr("recovery.key", current_app.config["FERNET_KEY"])
     return target
 
 
 def _kind_from_name(name):
     for kind in ("manual", "auto", "pre-restore"):
-        if name.startswith(f"xvpn-panel-{kind}-") or name.startswith(f"vpn-panel-{kind}-"):
+        if name.startswith(f"xvpn-panel-{kind}-"):
             return kind
     return "other"
 
 
 def list_backups():
     rows = []
-    paths = set(backup_dir().glob("xvpn-panel-*.zip")) | set(backup_dir().glob("vpn-panel-*.zip"))
-    for path in sorted(paths, key=lambda p: p.stat().st_mtime, reverse=True):
+    for path in sorted(backup_dir().glob("xvpn-panel-*.zip"), key=lambda p: p.stat().st_mtime, reverse=True):
         st = path.stat()
         rows.append(
             {
@@ -154,14 +148,13 @@ def _reencrypt_db(path: Path, old_key: str, new_key: str):
     new = Fernet(new_key.encode())
     conn = sqlite3.connect(path)
     try:
-        # Node configurations.
         for row_id, value in conn.execute("SELECT id,config_enc FROM nodes").fetchall():
             try:
                 plain = old.decrypt(value.encode()).decode()
             except InvalidToken as exc:
                 raise ValueError("备份中的节点配置无法使用恢复密钥解密") from exc
             conn.execute("UPDATE nodes SET config_enc=? WHERE id=?", (new.encrypt(plain.encode()).decode(), row_id))
-        # Telegram Bot Token is also Fernet protected in system settings.
+
         row = conn.execute("SELECT value FROM system_settings WHERE key='telegram_bot_token_enc'").fetchone()
         if row and row[0]:
             try:
@@ -171,8 +164,6 @@ def _reencrypt_db(path: Path, old_key: str, new_key: str):
                     (new.encrypt(plain.encode()).decode(),),
                 )
             except InvalidToken:
-                # Older/manual databases may not have a valid encrypted token; clear it
-                # instead of making the whole restore unusable.
                 conn.execute("UPDATE system_settings SET value='' WHERE key='telegram_bot_token_enc'")
                 conn.execute("UPDATE system_settings SET value='0' WHERE key='telegram_enabled'")
         conn.commit()
@@ -180,43 +171,49 @@ def _reencrypt_db(path: Path, old_key: str, new_key: str):
         conn.close()
 
 
+def _current_admin_path():
+    try:
+        with connect() as conn:
+            row = conn.execute("SELECT value FROM system_settings WHERE key='admin_path'").fetchone()
+        value = str(row[0] if row else "admin").strip().strip("/")
+        return value or "admin"
+    except Exception:
+        return "admin"
+
+
 def restore_backup(archive_path):
     archive_path = Path(archive_path)
     if not archive_path.exists():
         raise ValueError("备份文件不存在")
+
+    preserved_admin_path = _current_admin_path()
+
     with tempfile.TemporaryDirectory(prefix="xvpn-panel-restore-") as tmp:
         tmp_dir = Path(tmp)
         try:
             with zipfile.ZipFile(archive_path, "r") as zf:
                 names = set(zf.namelist())
-                if "panel.db" not in names or "manifest.json" not in names:
-                    raise ValueError("不是有效的 XVPN Panel 备份")
+                if {"panel.db", "manifest.json", "recovery.key"} - names:
+                    raise ValueError("不是有效的 XVPN Panel v1 备份")
                 manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
-                fmt = int(manifest.get("format", 1))
+                if int(manifest.get("format", 0)) != BACKUP_FORMAT or manifest.get("service") != "XVPN Panel":
+                    raise ValueError("备份格式版本不受支持")
                 zf.extract("panel.db", tmp_dir)
-                if fmt >= 2 and "recovery.key" in names:
-                    backup_key = zf.read("recovery.key").decode("utf-8").strip()
-                    try:
-                        Fernet(backup_key.encode())
-                    except Exception as exc:
-                        raise ValueError("备份恢复密钥格式无效") from exc
-                else:
-                    # Backward compatibility with older format-1 archives: they can only be restored
-                    # when the destination kept the same Fernet key.
-                    if manifest.get("fernet_fingerprint") != _key_fingerprint():
-                        raise ValueError("这是旧格式备份且加密密钥不匹配；请在原实例恢复，或先使用当前版本重新创建备份")
-                    backup_key = current_app.config["FERNET_KEY"]
-        except (zipfile.BadZipFile, json.JSONDecodeError) as exc:
+                backup_key = zf.read("recovery.key").decode("utf-8").strip()
+                try:
+                    Fernet(backup_key.encode())
+                except Exception as exc:
+                    raise ValueError("备份恢复密钥格式无效") from exc
+        except (zipfile.BadZipFile, json.JSONDecodeError, UnicodeDecodeError) as exc:
             raise ValueError("备份压缩包损坏或格式不正确") from exc
 
         src_db = tmp_dir / "panel.db"
         _validate_db(src_db)
-        expected = manifest.get("database_sha256")
-        if expected and hashlib.sha256(src_db.read_bytes()).hexdigest() != expected:
+        expected = str(manifest.get("database_sha256") or "").lower()
+        actual = hashlib.sha256(src_db.read_bytes()).hexdigest()
+        if not expected or expected != actual:
             raise ValueError("备份数据库校验值不匹配")
 
-        # Old archives may still contain App tokens. Scrub again during restore so
-        # restoring any compatible backup cannot revive an old user/admin App login.
         _scrub_auth_state(src_db)
         _reencrypt_db(src_db, backup_key, current_app.config["FERNET_KEY"])
         _validate_db(src_db)
@@ -226,6 +223,16 @@ def restore_backup(archive_path):
         dest = sqlite3.connect(current_app.config["DATABASE_PATH"])
         try:
             source.backup(dest)
+            dest.execute(
+                """INSERT INTO system_settings(key,value,updated_at) VALUES('admin_path',?,?)
+                   ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at""",
+                (preserved_admin_path, datetime.now(timezone.utc).isoformat(timespec="seconds")),
+            )
+            for table in ("api_tokens", "admin_api_tokens", "auth_rate_limits"):
+                try:
+                    dest.execute(f"DELETE FROM {table}")
+                except sqlite3.OperationalError:
+                    pass
             dest.commit()
         finally:
             source.close()
