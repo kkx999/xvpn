@@ -1,0 +1,22 @@
+{% extends 'settings.html' %}
+{% block content %}
+{{ super() }}
+<section class="panel-card settings-card" id="admin-path-section" style="margin-top:18px">
+  <div class="card-head">
+    <div><h2>后台访问路径</h2><p>隐藏默认后台入口。修改后旧路径直接失效，不会重定向暴露新地址。</p></div>
+    <span class="badge blue">安全入口</span>
+  </div>
+  <form method="post" action="{{ url_for('admin.admin_path_settings') }}" class="form-grid">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label class="span-2">后台路径
+      <div class="timezone-input-row">
+        <input value="/" readonly aria-label="路径前缀" style="max-width:48px;text-align:center">
+        <input name="admin_path" minlength="3" maxlength="48" pattern="[A-Za-z0-9][A-Za-z0-9_-]{2,47}" value="{{ settings_values.admin_path or 'admin' }}" required autocomplete="off" spellcheck="false" placeholder="例如 manage-xvpn">
+      </div>
+      <small class="help-text">只允许 3-48 位字母、数字、-、_。保存后会自动重载 Panel，并注销当前后台会话。</small>
+    </label>
+    <div class="span-2 info-note">当前入口：<strong>/{{ settings_values.admin_path or 'admin' }}/login</strong>。请保存好新路径；忘记时可在服务器执行 <code>xvpn admin-path</code> 查看。</div>
+    <div class="span-2 form-actions"><button class="primary-btn" data-loading-text="切换中..." data-confirm="修改后当前后台地址会立即失效，并需要使用新路径重新登录。" data-confirm-title="修改后台访问路径？" data-confirm-button="确认修改" type="submit">修改后台路径</button></div>
+  </form>
+</section>
+{% endblock %}
