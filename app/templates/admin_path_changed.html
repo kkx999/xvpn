@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>后台路径已修改 · XVPN Panel</title>
+  <style>
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f5f7fb;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#162033}.card{width:min(92vw,520px);background:#fff;border:1px solid #e8ecf4;border-radius:24px;padding:30px;box-shadow:0 18px 50px rgba(31,45,74,.08)}h1{font-size:22px;margin:0 0 10px}p{line-height:1.7;color:#647087}.path{display:block;margin:18px 0;padding:14px 16px;border-radius:14px;background:#f3f6ff;color:#405de6;font-weight:700;word-break:break-all}.btn{display:block;text-align:center;text-decoration:none;background:#405de6;color:#fff;padding:13px 18px;border-radius:14px;font-weight:700}.hint{font-size:13px;margin-top:14px}.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#405de6;margin-right:8px;animation:pulse 1s infinite}@keyframes pulse{50%{opacity:.3}}
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>后台路径已修改</h1>
+    <p>Panel 正在重载新的后台入口。旧路径不会跳转到新路径，重载后会直接失效。</p>
+    <span class="path">/{{ new_path }}/login</span>
+    <a class="btn" id="open-new" href="{{ new_url }}">打开新后台</a>
+    <p class="hint"><span class="dot"></span><span id="status">正在等待 Panel 重载…</span></p>
+  </main>
+<script>
+(() => {
+  const url = {{ new_url|tojson }};
+  const status = document.getElementById('status');
+  let tries = 0;
+  const check = async () => {
+    tries += 1;
+    try {
+      const res = await fetch(url, {cache:'no-store', credentials:'same-origin', redirect:'follow'});
+      if (res.ok) { location.replace(url); return; }
+    } catch (_) {}
+    if (tries < 30) setTimeout(check, 700);
+    else status.textContent = '自动打开超时，请点击上面的“打开新后台”。';
+  };
+  setTimeout(check, 1300);
+})();
+</script>
+</body>
+</html>
