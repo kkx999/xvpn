@@ -16,7 +16,7 @@ case "${1:-}" in
   "") ;;
   --version|-v) REQUESTED="${2:-}"; [[ -n "$REQUESTED" ]] || fail "缺少版本号。" ;;
   v*|[0-9]*) REQUESTED="$1" ;;
-  *) fail "用法：install-online.sh [--version v1.1.0]" ;;
+  *) fail "用法：install-online.sh [--version v1.0]" ;;
 esac
 
 if ! command -v curl >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1 || ! command -v sha256sum >/dev/null 2>&1; then
@@ -25,14 +25,14 @@ if ! command -v curl >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1 || ! 
 fi
 
 normalize_version(){ local v="${1#v}"; v="${v#V}"; echo "$v"; }
-valid_version(){ [[ "$1" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([._-]?[A-Za-z]+([._-]?[0-9]+)?)?$ ]]; }
+valid_version(){ [[ "$1" =~ ^v?[0-9]+\.[0-9]+(\.[0-9]+)?([._-]?[A-Za-z]+([._-]?[0-9]+)?)?$ ]]; }
 current_version(){ [[ -f /opt/xvpn-panel/VERSION ]] && tr -d '[:space:]' < /opt/xvpn-panel/VERSION || true; }
 version_compare(){ python3 - "$1" "$2" <<'PY'
 import re,sys
 def k(v):
- v=v.strip().lstrip('vV'); m=re.fullmatch(r'(\d+)\.(\d+)\.(\d+)(?:[-._]?([A-Za-z]+)[-._]?(\d+)?)?',v)
+ v=v.strip().lstrip('vV'); m=re.fullmatch(r'(\d+)\.(\d+)(?:\.(\d+))?(?:[-._]?([A-Za-z]+)[-._]?(\d+)?)?',v)
  if not m:return None
- a,b,c=map(int,m.group(1,2,3)); label=(m.group(4) or '').lower(); n=int(m.group(5) or 0)
+ a,b=map(int,m.group(1,2)); c=int(m.group(3) or 0); label=(m.group(4) or '').lower(); n=int(m.group(5) or 0)
  rank={'dev':10,'alpha':20,'a':20,'beta':30,'b':30,'rc':40,'':100}.get(label,50)
  return a,b,c,rank,n,label
 A,B=k(sys.argv[1]),k(sys.argv[2])
@@ -47,7 +47,7 @@ echo "========================================"
 
 RELEASE_JSON="$TMP/release.json"
 if [[ -n "$REQUESTED" ]]; then
-  valid_version "$REQUESTED" || fail "版本格式无效，例如 v1.1.0。"
+  valid_version "$REQUESTED" || fail "版本格式无效，例如 v1.0。"
   TARGET_VERSION="$(normalize_version "$REQUESTED")"
   TAG="v$TARGET_VERSION"
   info "正在获取正式版本：$TAG"
@@ -92,6 +92,11 @@ if [[ -n "$REQUESTED" && "$(normalize_version "$REQUESTED")" != "$TARGET_VERSION
 fi
 
 CUR="$(current_version)"
+REN_NUMBERED_CORRECTION=0
+if [[ "$CUR" == "1.1.0" && "$TARGET_VERSION" == "1.0" ]]; then
+  REN_NUMBERED_CORRECTION=1
+  warn "检测到错误编号的 v1.1.0，将按正式基线修正为 v1.0。"
+fi
 if [[ -z "$REQUESTED" && -n "$CUR" ]]; then
   CMP="$(version_compare "$TARGET_VERSION" "$CUR")"
   if [[ "$CMP" == "same" ]]; then
@@ -100,7 +105,7 @@ if [[ -z "$REQUESTED" && -n "$CUR" ]]; then
     ok "当前已经是最新版本，无需更新。"
     exit 0
   fi
-  if [[ "$CMP" == "older" ]]; then
+  if [[ "$CMP" == "older" && "$REN_NUMBERED_CORRECTION" != "1" ]]; then
     echo "当前版本：v$CUR"
     echo "最新正式版本：v$TARGET_VERSION"
     ok "当前安装版本高于最新正式版本，不执行降级。"

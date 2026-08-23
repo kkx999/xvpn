@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION")"
-[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([._-]?[A-Za-z]+([._-]?[0-9]+)?)?$ ]] || { echo "[ERROR] VERSION 无效：$VERSION" >&2; exit 1; }
+[[ "$VERSION" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?([._-]?[A-Za-z]+([._-]?[0-9]+)?)?$ ]] || { echo "[ERROR] VERSION 无效：$VERSION" >&2; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "[ERROR] 需要 python3" >&2; exit 1; }
 
 OUT="${1:-$ROOT/dist}"

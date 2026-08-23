@@ -125,7 +125,7 @@ def main():
         health = client.get("/api/v1/health")
         require(health.status_code == 200, "health endpoint failed")
         health_json = health.get_json() or {}
-        require(health_json.get("version") == "1.1.0", "panel version mismatch")
+        require(health_json.get("version") == "1.0", "panel version mismatch")
         require(health_json.get("core") == "mihomo", "health core mismatch")
         require(client.get("/admin/login").status_code == 200, "default admin path failed")
         require(client.get("/not-admin/login").status_code == 404, "unexpected admin alias exposed")
@@ -181,16 +181,16 @@ def main():
         # Minimum-version policy applies to protected APIs, not only /app/update.
         with app.app_context():
             snapshot = {
-                "repository": "kkx999/XVPN-Android", "tag": "v1.1.0",
-                "version_name": "1.1.0", "version_code": 10100,
-                "release_name": "XVPN v1.1.0", "release_notes": "test",
-                "release_url": "https://github.com/kkx999/XVPN-Android/releases/tag/v1.1.0",
-                "apk_name": "XVPN-v1.1.0.apk",
-                "apk_url": "https://github.com/kkx999/XVPN-Android/releases/download/v1.1.0/XVPN-v1.1.0.apk",
+                "repository": "kkx999/XVPN-Android", "tag": "v1.0",
+                "version_name": "1.0", "version_code": 10101,
+                "release_name": "XVPN v1.0", "release_notes": "test",
+                "release_url": "https://github.com/kkx999/XVPN-Android/releases/tag/v1.0",
+                "apk_name": "XVPN-v1.0.apk",
+                "apk_url": "https://github.com/kkx999/XVPN-Android/releases/download/v1.0/XVPN-v1.0.apk",
                 "apk_size": 123, "sha256": "a" * 64,
             }
             set_settings({
-                "app_update_min_version_code": "10100",
+                "app_update_min_version_code": "10101",
                 "app_update_last_checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "app_update_last_snapshot_json": json.dumps(snapshot, separators=(",", ":")),
                 "app_update_last_stale": "0",
@@ -209,7 +209,7 @@ def main():
             "node_id": node["id"],
             "upload_total_bytes": 100,
             "download_total_bytes": 200,
-            "app_version": "1.1.0",
+            "app_version": "1.0",
         })
         r1 = report1.get_json() or {}
         require(report1.status_code == 200 and r1.get("baseline_reset") is True, "traffic first report failed")
@@ -222,7 +222,7 @@ def main():
             "node_id": node["id"],
             "upload_total_bytes": 150,
             "download_total_bytes": 260,
-            "app_version": "1.1.0",
+            "app_version": "1.0",
         })
         r2 = report2.get_json() or {}
         require(report2.status_code == 200, "traffic delta report failed")
@@ -232,7 +232,7 @@ def main():
         duplicate = client.post("/api/v1/traffic/report", headers=auth, json={
             "device_id": "device-selftest-01", "session_id": "session-selftest-01",
             "node_id": node["id"], "upload_total_bytes": 150,
-            "download_total_bytes": 260, "app_version": "1.1.0",
+            "download_total_bytes": 260, "app_version": "1.0",
         })
         require((duplicate.get_json() or {}).get("delta") == {"upload_bytes": 0, "download_bytes": 0},
                 "duplicate traffic report was counted twice")
@@ -240,7 +240,7 @@ def main():
         delayed_new_session = client.post("/api/v1/traffic/report", headers=auth, json={
             "device_id": "device-selftest-01", "session_id": "session-selftest-02",
             "node_id": node["id"], "upload_total_bytes": 25,
-            "download_total_bytes": 40, "app_version": "1.1.0",
+            "download_total_bytes": 40, "app_version": "1.0",
         })
         delayed_json = delayed_new_session.get_json() or {}
         require((delayed_json.get("delta") or {}).get("upload_bytes") == 25,

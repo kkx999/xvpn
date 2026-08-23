@@ -1,6 +1,6 @@
-# XVPN Panel v1.1.0
+# XVPN Panel v1.0
 
-XVPN Panel v1.1.0 是配套 **XVPN Android + Mihomo Core** 的当前正式控制面板。
+XVPN Panel v1.0 是配套 **XVPN Android + Mihomo Core** 的当前正式控制面板。
 
 ## 一键安装
 
