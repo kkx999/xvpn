@@ -1,0 +1,44 @@
+name: Clear Actions History
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  actions: write
+  contents: write
+
+jobs:
+  clear:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Remove previous Actions runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --paginate "/repos/${GITHUB_REPOSITORY}/actions/runs?per_page=100" \
+            --jq ".workflow_runs[] | select(.id != ${GITHUB_RUN_ID}) | .id" |
+          while read -r run_id; do
+            [ -n "$run_id" ] || continue
+            gh api --method DELETE "/repos/${GITHUB_REPOSITORY}/actions/runs/$run_id"
+          done
+
+      - name: Remove temporary cleanup workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          workflow_path=".github/workflows/clear-actions.yml"
+          file_sha="$(gh api "/repos/${GITHUB_REPOSITORY}/contents/$workflow_path?ref=main" --jq .sha)"
+          gh api --method DELETE "/repos/${GITHUB_REPOSITORY}/contents/$workflow_path" \
+            -f message="chore: finish Actions cleanup" \
+            -f sha="$file_sha" \
+            -f branch="main"
+
+      - name: Remove this cleanup run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --method DELETE "/repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
