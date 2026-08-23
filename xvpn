@@ -164,7 +164,7 @@ XVPN Panel 命令：
   xvpn logs                  查看实时日志
   xvpn password              重置管理员密码
   xvpn domain                域名 / HTTPS 管理
-  xvpn update [v1.0.0]       更新或安装指定版本
+  xvpn update [v1.1.0]       更新或安装指定版本
   xvpn admin-path NAME       修改后台路径并立即重启生效
   xvpn uninstall             彻底卸载并清除 Panel
   xvpn version               显示当前版本

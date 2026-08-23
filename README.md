@@ -1,6 +1,6 @@
-# XVPN Panel v1.0.0
+# XVPN Panel v1.1.0
 
-XVPN Panel v1.0.0 是为 **XVPN Android + Mihomo Core** 重新整理的控制面板。
+XVPN Panel v1.1.0 是配套 **XVPN Android + Mihomo Core** 的当前正式控制面板。
 
 ## 一键安装
 
@@ -50,7 +50,7 @@ Mihomo Core
 
 Panel 不再向 Android 下发 sing-box 配置，也不保留旧 raw-config API 兼容路径。后台 UI、用户/邀请码、国家分类排序、流量统计、Android 更新控制、备份和 Telegram 等产品逻辑继续保留。
 
-## v1.0.0 节点协议
+## 当前节点协议
 
 - VLESS / Reality / TLS / WS / gRPC
 - VMess
@@ -59,3 +59,11 @@ Panel 不再向 Android 下发 sing-box 配置，也不保留旧 raw-config API 
 - Hysteria2
 - TUIC
 - AnyTLS
+
+## 当前同步与更新机制
+
+- Android 节点目录带修订号，App 在启动、登录、回到前台和手动刷新时同步。
+- 连接流量约每 10 秒累计上报；按设备、会话、节点幂等去重，重试不会重复计量。
+- 用户流量详情页每 10 秒自动刷新，显示今日、本月、累计及最后上报时间。
+- 最低运行版本会在所有受保护 App API 上执行，旧版本不能绕过限制继续使用。
+- App 更新接口提供 APK、大小、SHA-256、包名、签名和 Release 信息。

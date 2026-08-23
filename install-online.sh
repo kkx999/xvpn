@@ -16,7 +16,7 @@ case "${1:-}" in
   "") ;;
   --version|-v) REQUESTED="${2:-}"; [[ -n "$REQUESTED" ]] || fail "缺少版本号。" ;;
   v*|[0-9]*) REQUESTED="$1" ;;
-  *) fail "用法：install-online.sh [--version v1.0.0]" ;;
+  *) fail "用法：install-online.sh [--version v1.1.0]" ;;
 esac
 
 if ! command -v curl >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1 || ! command -v sha256sum >/dev/null 2>&1; then
@@ -47,7 +47,7 @@ echo "========================================"
 
 RELEASE_JSON="$TMP/release.json"
 if [[ -n "$REQUESTED" ]]; then
-  valid_version "$REQUESTED" || fail "版本格式无效，例如 v1.0.0。"
+  valid_version "$REQUESTED" || fail "版本格式无效，例如 v1.1.0。"
   TARGET_VERSION="$(normalize_version "$REQUESTED")"
   TAG="v$TARGET_VERSION"
   info "正在获取正式版本：$TAG"
@@ -60,7 +60,7 @@ fi
 curl -fsSL --connect-timeout 8 --max-time 20 \
   -H 'Accept: application/vnd.github+json' \
   "$API_URL" -o "$RELEASE_JSON" \
-  || fail "无法获取 XVPN Panel 正式 Release。当前仓库若还未发布 v1.0.0，请先使用源码包执行 bash install.sh。"
+  || fail "无法获取 XVPN Panel 正式 Release，请检查服务器到 GitHub 的网络。"
 
 readarray -t META < <(python3 - "$RELEASE_JSON" <<'PY'
 import json,sys

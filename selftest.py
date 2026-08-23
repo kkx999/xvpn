@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 
 from cryptography.fernet import Fernet
@@ -124,7 +125,7 @@ def main():
         health = client.get("/api/v1/health")
         require(health.status_code == 200, "health endpoint failed")
         health_json = health.get_json() or {}
-        require(health_json.get("version") == "1.0.0", "panel version mismatch")
+        require(health_json.get("version") == "1.1.0", "panel version mismatch")
         require(health_json.get("core") == "mihomo", "health core mismatch")
         require(client.get("/admin/login").status_code == 200, "default admin path failed")
         require(client.get("/not-admin/login").status_code == 404, "unexpected admin alias exposed")
@@ -174,6 +175,33 @@ def main():
         bootstrap_json = bootstrap.get_json() or {}
         require(bootstrap.status_code == 200 and bootstrap_json.get("core") == "mihomo", "bootstrap API failed")
         require((bootstrap_json.get("nodes") or {}).get("node_schema") == "xvpn.node.v1", "bootstrap node schema mismatch")
+        require(bootstrap_json.get("traffic_report_interval_seconds") == 10, "traffic interval mismatch")
+        require((bootstrap_json.get("nodes") or {}).get("revision"), "node revision missing")
+
+        # Minimum-version policy applies to protected APIs, not only /app/update.
+        with app.app_context():
+            snapshot = {
+                "repository": "kkx999/XVPN-Android", "tag": "v1.1.0",
+                "version_name": "1.1.0", "version_code": 10100,
+                "release_name": "XVPN v1.1.0", "release_notes": "test",
+                "release_url": "https://github.com/kkx999/XVPN-Android/releases/tag/v1.1.0",
+                "apk_name": "XVPN-v1.1.0.apk",
+                "apk_url": "https://github.com/kkx999/XVPN-Android/releases/download/v1.1.0/XVPN-v1.1.0.apk",
+                "apk_size": 123, "sha256": "a" * 64,
+            }
+            set_settings({
+                "app_update_min_version_code": "10100",
+                "app_update_last_checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "app_update_last_snapshot_json": json.dumps(snapshot, separators=(",", ":")),
+                "app_update_last_stale": "0",
+            })
+        old_headers = dict(auth)
+        old_headers.update({"X-XVPN-Version-Name": "1.0.0", "X-XVPN-Version-Code": "10000"})
+        blocked = client.get("/api/v1/app/bootstrap", headers=old_headers)
+        require(blocked.status_code == 426, "minimum version did not block protected API")
+        require((blocked.get_json() or {}).get("code") == "APP_VERSION_UNSUPPORTED", "version block payload mismatch")
+        with app.app_context():
+            set_settings({"app_update_min_version_code": "0"})
 
         report1 = client.post("/api/v1/traffic/report", headers=auth, json={
             "device_id": "device-selftest-01",
@@ -181,10 +209,12 @@ def main():
             "node_id": node["id"],
             "upload_total_bytes": 100,
             "download_total_bytes": 200,
-            "app_version": "1.0.0",
+            "app_version": "1.1.0",
         })
         r1 = report1.get_json() or {}
-        require(report1.status_code == 200 and r1.get("baseline_reset") is True, "traffic baseline failed")
+        require(report1.status_code == 200 and r1.get("baseline_reset") is True, "traffic first report failed")
+        require((r1.get("delta") or {}).get("upload_bytes") == 100, "traffic first upload was lost")
+        require((r1.get("delta") or {}).get("download_bytes") == 200, "traffic first download was lost")
 
         report2 = client.post("/api/v1/traffic/report", headers=auth, json={
             "device_id": "device-selftest-01",
@@ -192,12 +222,31 @@ def main():
             "node_id": node["id"],
             "upload_total_bytes": 150,
             "download_total_bytes": 260,
-            "app_version": "1.0.0",
+            "app_version": "1.1.0",
         })
         r2 = report2.get_json() or {}
         require(report2.status_code == 200, "traffic delta report failed")
         require((r2.get("delta") or {}).get("upload_bytes") == 50, "traffic upload delta mismatch")
         require((r2.get("delta") or {}).get("download_bytes") == 60, "traffic download delta mismatch")
+
+        duplicate = client.post("/api/v1/traffic/report", headers=auth, json={
+            "device_id": "device-selftest-01", "session_id": "session-selftest-01",
+            "node_id": node["id"], "upload_total_bytes": 150,
+            "download_total_bytes": 260, "app_version": "1.1.0",
+        })
+        require((duplicate.get_json() or {}).get("delta") == {"upload_bytes": 0, "download_bytes": 0},
+                "duplicate traffic report was counted twice")
+
+        delayed_new_session = client.post("/api/v1/traffic/report", headers=auth, json={
+            "device_id": "device-selftest-01", "session_id": "session-selftest-02",
+            "node_id": node["id"], "upload_total_bytes": 25,
+            "download_total_bytes": 40, "app_version": "1.1.0",
+        })
+        delayed_json = delayed_new_session.get_json() or {}
+        require((delayed_json.get("delta") or {}).get("upload_bytes") == 25,
+                "delayed first report lost upload traffic")
+        require((delayed_json.get("delta") or {}).get("download_bytes") == 40,
+                "delayed first report lost download traffic")
 
         # Backup before changing admin_path, then restore after the change. Restore must
         # keep the current access path and must not revive the App bearer token.

@@ -86,6 +86,19 @@ CREATE TABLE IF NOT EXISTS traffic_device_counters (
     PRIMARY KEY(user_id,device_id),
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
+CREATE TABLE IF NOT EXISTS traffic_session_counters (
+    user_id INTEGER NOT NULL,
+    device_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    node_id INTEGER NOT NULL,
+    upload_total_bytes INTEGER NOT NULL DEFAULT 0 CHECK(upload_total_bytes>=0),
+    download_total_bytes INTEGER NOT NULL DEFAULT 0 CHECK(download_total_bytes>=0),
+    app_version TEXT NOT NULL DEFAULT '',
+    first_report_at TEXT NOT NULL,
+    last_report_at TEXT NOT NULL,
+    PRIMARY KEY(user_id,device_id,session_id,node_id),
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
 CREATE TABLE IF NOT EXISTS traffic_daily (
     user_id INTEGER NOT NULL,
     day TEXT NOT NULL,
@@ -133,6 +146,7 @@ CREATE INDEX IF NOT EXISTS idx_country_orders_sort ON country_orders(sort_order,
 CREATE INDEX IF NOT EXISTS idx_tokens_user ON api_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_traffic_daily_day ON traffic_daily(day,user_id);
 CREATE INDEX IF NOT EXISTS idx_traffic_counters_report ON traffic_device_counters(last_report_at);
+CREATE INDEX IF NOT EXISTS idx_traffic_sessions_report ON traffic_session_counters(last_report_at,user_id);
 CREATE INDEX IF NOT EXISTS idx_traffic_node_daily_day ON traffic_node_daily(day,node_id,user_id);
 CREATE INDEX IF NOT EXISTS idx_system_event_logs_created ON system_event_logs(created_at,id);
 '''

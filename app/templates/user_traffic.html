@@ -20,7 +20,7 @@
     <span><small>统计边界</small><strong>{{ panel_timezone }} · 00:00</strong></span>
     <span><small>历史天数</small><strong>{{ total_days }}</strong></span>
   </div>
-  <div class="info-note">Android 建议连接期间每 5 分钟上报一次，并在断开 VPN 前补报一次。Panel 不信任客户端“本次增量”，只使用累计计数器计算差值，避免网络重试造成重复累加。</div>
+  <div class="info-note">Android 连接期间约每 10 秒上报一次，并在连接、切换、断开和进入后台时补报。Panel 按设备、会话与节点保存累计计数器，网络重试和乱序请求不会重复累加或漏掉首个延迟上报。</div>
 </div>
 
 <div class="panel-card">
@@ -55,4 +55,5 @@
     </tr>{% else %}<tr><td colspan="6" class="empty">尚无设备上报</td></tr>{% endfor %}
   </tbody></table></div>
 </div>
+<script>window.setTimeout(function(){ window.location.reload(); }, 10000);</script>
 {% endblock %}

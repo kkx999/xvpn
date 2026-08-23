@@ -908,8 +908,9 @@ def user_traffic_reset(user_id):
             return "Not Found", 404
         conn.execute("DELETE FROM traffic_daily WHERE user_id=?", (user_id,))
         conn.execute("DELETE FROM traffic_node_daily WHERE user_id=?", (user_id,))
+        conn.execute("DELETE FROM traffic_session_counters WHERE user_id=?", (user_id,))
         conn.execute("DELETE FROM traffic_device_counters WHERE user_id=?", (user_id,))
-    flash(f"{user['username']} 的流量统计已重置；下一次 Android 上报会重新建立基线", "success")
+    flash(f"{user['username']} 的流量统计已重置；下一次 Android 上报会从当前会话累计值重新同步", "success")
     return _users_redirect()
 
 

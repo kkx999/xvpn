@@ -1,4 +1,5 @@
 import hashlib
+import json
 import secrets
 from datetime import datetime, timedelta, timezone
 from functools import wraps
@@ -12,6 +13,7 @@ from .db import connect, transaction, utcnow
 from .node_profile import canonical_profile
 from .traffic import traffic_period_keys, traffic_summary
 from .version import APP_VERSION
+from .settings_store import get_settings
 
 
 api_bp = Blueprint("api", __name__)
@@ -152,7 +154,8 @@ def bearer_required(view):
                 conn.execute("UPDATE api_tokens SET last_used_at=? WHERE id=?", (utcnow(), row["id"]))
                 conn.commit()
                 g.user = {"id": row["user_id"], "username": row["username"], "token": raw, "role": "user"}
-                return view(*args, **kwargs)
+                blocked = _version_policy_response()
+                return blocked if blocked is not None else view(*args, **kwargs)
 
             admin = conn.execute(
                 """SELECT admin_api_tokens.*,admins.username
@@ -169,8 +172,46 @@ def bearer_required(view):
             conn.execute("UPDATE admin_api_tokens SET last_used_at=? WHERE id=?", (utcnow(), admin["id"]))
             conn.commit()
             g.user = {"id": admin["admin_id"], "username": admin["username"], "token": raw, "role": "admin"}
-        return view(*args, **kwargs)
+        blocked = _version_policy_response()
+        return blocked if blocked is not None else view(*args, **kwargs)
     return wrapped
+
+
+def _client_version():
+    name = str(
+        request.headers.get("X-XVPN-Version-Name") or
+        request.headers.get("X-App-Version") or request.headers.get("X-Version-Name") or ""
+    ).strip()[:64]
+    raw = (
+        request.headers.get("X-XVPN-Version-Code") or
+        request.headers.get("X-App-Version-Code") or request.headers.get("X-Version-Code") or "0"
+    )
+    try:
+        code = max(0, int(raw or 0))
+    except (TypeError, ValueError):
+        code = 0
+    return name, code
+
+
+def _version_policy_response():
+    settings = get_settings()
+    try:
+        minimum = max(0, int(settings.get("app_update_min_version_code", "0") or 0))
+    except (TypeError, ValueError):
+        minimum = 0
+    force = settings.get("app_update_force", "0") == "1"
+    name, code = _client_version()
+    if not force and (not minimum or not code or code >= minimum):
+        return None
+    payload = app_update_payload(current_app, name, code)
+    if not payload.get("must_update") and not payload.get("force_update"):
+        return None
+    payload.update({
+        "ok": False,
+        "code": "APP_VERSION_UNSUPPORTED",
+        "message": "当前 App 版本低于服务器最低要求，请先更新后继续使用",
+    })
+    return jsonify(payload), 426
 
 
 @api_bp.get("")
@@ -186,7 +227,7 @@ def api_index():
         "registration_enabled": bool(current_app.config.get("REGISTRATION_ENABLED", True)),
         "token_days": int(current_app.config.get("TOKEN_DAYS", 30)),
         "traffic_reporting": True,
-        "traffic_report_interval_seconds": 300,
+        "traffic_report_interval_seconds": 10,
         "traffic_report_requires_node_id": True,
         "panel_timezone": current_app.config.get("PANEL_TIMEZONE", "UTC"),
         "app_update_api": True,
@@ -400,6 +441,10 @@ def _nodes_payload():
         })
         total += 1
 
+    revision_source = json.dumps([
+        [int(row["id"]), str(row["updated_at"]), str(row["status"]), int(row["sort_order"])]
+        for row in rows
+    ], ensure_ascii=False, separators=(",", ":"))
     return {
         "ok": True,
         "schema": "xvpn.nodes.v1",
@@ -408,6 +453,8 @@ def _nodes_payload():
         "countries": list(countries.values()),
         "total": total,
         "skipped_invalid": skipped,
+        "revision": hashlib.sha256(revision_source.encode("utf-8")).hexdigest()[:24],
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
 
 
@@ -432,7 +479,7 @@ def app_bootstrap():
         "server_time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "registration_enabled": bool(current_app.config.get("REGISTRATION_ENABLED", True)),
         "traffic_reporting": True,
-        "traffic_report_interval_seconds": 300,
+        "traffic_report_interval_seconds": 10,
         "traffic_report_requires_node_id": True,
         "panel_timezone": current_app.config.get("PANEL_TIMEZONE", "UTC"),
         "app_update_api": True,
@@ -448,6 +495,8 @@ def app_bootstrap():
             "countries": payload["countries"],
             "total": payload["total"],
             "skipped_invalid": payload["skipped_invalid"],
+            "revision": payload["revision"],
+            "generated_at": payload["generated_at"],
         },
     })
 
@@ -510,25 +559,29 @@ def traffic_report():
         if not node:
             return response_error("INVALID_NODE_ID", "节点不存在，请先刷新节点列表", 400)
 
-        conn.execute("DELETE FROM traffic_device_counters WHERE last_report_at<?", (stale_before,))
+        conn.execute("DELETE FROM traffic_session_counters WHERE last_report_at<?", (stale_before,))
         row = conn.execute(
-            "SELECT * FROM traffic_device_counters WHERE user_id=? AND device_id=?",
-            (g.user["id"], device_id),
+            """SELECT * FROM traffic_session_counters
+               WHERE user_id=? AND device_id=? AND session_id=? AND node_id=?""",
+            (g.user["id"], device_id, session_id, node_id),
         ).fetchone()
         if not row:
-            delta_upload = 0
-            delta_download = 0
+            # A delayed first request must not lose traffic. The session key
+            # makes this full cumulative value idempotent on every retry.
+            delta_upload = upload_total
+            delta_download = download_total
             baseline_reset = True
             conn.execute(
-                """INSERT INTO traffic_device_counters(
-                       user_id,device_id,session_id,node_id,upload_total_bytes,download_total_bytes,app_version,last_report_at
-                   ) VALUES(?,?,?,?,?,?,?,?)""",
-                (g.user["id"], device_id, session_id, node_id, upload_total, download_total, app_version, now_iso),
+                """INSERT INTO traffic_session_counters(
+                       user_id,device_id,session_id,node_id,upload_total_bytes,download_total_bytes,
+                       app_version,first_report_at,last_report_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?)""",
+                (g.user["id"], device_id, session_id, node_id, upload_total, download_total,
+                 app_version, now_iso, now_iso),
             )
         else:
-            same_stream = row["session_id"] == session_id and int(row["node_id"] or 0) == node_id
             monotonic = upload_total >= int(row["upload_total_bytes"]) and download_total >= int(row["download_total_bytes"])
-            if same_stream and monotonic:
+            if monotonic:
                 delta_upload = upload_total - int(row["upload_total_bytes"])
                 delta_download = download_total - int(row["download_total_bytes"])
             else:
@@ -536,11 +589,33 @@ def traffic_report():
                 delta_download = 0
                 baseline_reset = True
             conn.execute(
-                """UPDATE traffic_device_counters
-                   SET session_id=?,node_id=?,upload_total_bytes=?,download_total_bytes=?,app_version=?,last_report_at=?
-                   WHERE user_id=? AND device_id=?""",
-                (session_id, node_id, upload_total, download_total, app_version, now_iso, g.user["id"], device_id),
+                """UPDATE traffic_session_counters SET
+                   upload_total_bytes=MAX(upload_total_bytes,?),
+                   download_total_bytes=MAX(download_total_bytes,?),app_version=?,last_report_at=?
+                   WHERE user_id=? AND device_id=? AND session_id=? AND node_id=?""",
+                (upload_total, download_total, app_version, now_iso,
+                 g.user["id"], device_id, session_id, node_id),
             )
+
+        conn.execute(
+            """INSERT INTO traffic_device_counters(
+                   user_id,device_id,session_id,node_id,upload_total_bytes,download_total_bytes,app_version,last_report_at
+               ) VALUES(?,?,?,?,?,?,?,?)
+               ON CONFLICT(user_id,device_id) DO UPDATE SET
+                   session_id=excluded.session_id,node_id=excluded.node_id,
+                   upload_total_bytes=CASE
+                       WHEN traffic_device_counters.session_id=excluded.session_id
+                        AND traffic_device_counters.node_id=excluded.node_id
+                       THEN MAX(traffic_device_counters.upload_total_bytes,excluded.upload_total_bytes)
+                       ELSE excluded.upload_total_bytes END,
+                   download_total_bytes=CASE
+                       WHEN traffic_device_counters.session_id=excluded.session_id
+                        AND traffic_device_counters.node_id=excluded.node_id
+                       THEN MAX(traffic_device_counters.download_total_bytes,excluded.download_total_bytes)
+                       ELSE excluded.download_total_bytes END,
+                   app_version=excluded.app_version,last_report_at=excluded.last_report_at""",
+            (g.user["id"], device_id, session_id, node_id, upload_total, download_total, app_version, now_iso),
+        )
 
         conn.execute(
             """INSERT INTO traffic_daily(user_id,day,upload_bytes,download_bytes,report_count,updated_at)
