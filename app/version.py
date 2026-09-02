@@ -14,7 +14,7 @@ def _read_version() -> str:
             return value.lstrip("vV")
     except OSError:
         pass
-    return "1.1"
+    return "1.0"
 
 
 APP_VERSION = _read_version()

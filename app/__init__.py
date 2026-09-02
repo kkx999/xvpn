@@ -45,7 +45,6 @@ def create_app():
     app.config["ANDROID_UPDATE_REPOSITORY"] = os.environ.get(
         "XVPN_ANDROID_REPOSITORY", "kkx999/XVPN-Android"
     ).strip() or "kkx999/XVPN-Android"
-    app.config["IPAPI_IS_KEY"] = os.environ.get("IPAPI_IS_KEY", "").strip()
     app.config["ADMIN_ALLOWED_IPS"] = {
         x.strip() for x in os.environ.get("ADMIN_ALLOWED_IPS", "").split(",") if x.strip()
     }

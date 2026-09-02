@@ -16,7 +16,7 @@ case "${1:-}" in
   "") ;;
   --version|-v) REQUESTED="${2:-}"; [[ -n "$REQUESTED" ]] || fail "缺少版本号。" ;;
   v*|[0-9]*) REQUESTED="$1" ;;
-  *) fail "用法：install-online.sh [--version v1.1]" ;;
+  *) fail "用法：install-online.sh [--version v1.0]" ;;
 esac
 
 if ! command -v curl >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1 || ! command -v sha256sum >/dev/null 2>&1; then
@@ -47,7 +47,7 @@ echo "========================================"
 
 RELEASE_JSON="$TMP/release.json"
 if [[ -n "$REQUESTED" ]]; then
-  valid_version "$REQUESTED" || fail "版本格式无效，例如 v1.1。"
+  valid_version "$REQUESTED" || fail "版本格式无效，例如 v1.0。"
   TARGET_VERSION="$(normalize_version "$REQUESTED")"
   TAG="v$TARGET_VERSION"
   info "正在获取正式版本：$TAG"
@@ -97,13 +97,9 @@ if [[ "$CUR" == "1.1.0" && "$TARGET_VERSION" == "1.0" ]]; then
   REN_NUMBERED_CORRECTION=1
   warn "检测到错误编号的 v1.1.0，将按正式基线修正为 v1.0。"
 fi
-if [[ "$CUR" == "1.1.0" && "$TARGET_VERSION" == "1.1" ]]; then
-  REN_NUMBERED_CORRECTION=1
-  warn "检测到早期错误编号的 v1.1.0，将升级到正式 v1.1。"
-fi
 if [[ -z "$REQUESTED" && -n "$CUR" ]]; then
   CMP="$(version_compare "$TARGET_VERSION" "$CUR")"
-  if [[ "$CMP" == "same" && "$REN_NUMBERED_CORRECTION" != "1" ]]; then
+  if [[ "$CMP" == "same" ]]; then
     echo "当前版本：v$CUR"
     echo "最新版本：v$TARGET_VERSION"
     ok "当前已经是最新版本，无需更新。"

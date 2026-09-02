@@ -1,0 +1,74 @@
+name: Release XVPN Panel
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  actions: write
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install and self-test
+        run: |
+          set -euo pipefail
+          python -m pip install -r requirements.txt
+          python selftest.py
+
+      - name: Build verified release archive
+        run: |
+          set -euo pipefail
+          bash build-release.sh dist
+          cd dist
+          sha256sum -c SHA256SUMS.txt
+
+      - name: Publish verified release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          TAG="v${VERSION}"
+          TITLE="XVPN Panel v${VERSION}"
+          NOTES="XVPN Panel v${VERSION} 当前正式版：10 秒可靠流量同步、节点目录修订、全接口最低版本限制和 Android 应用内更新元数据。"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+            gh release edit "$TAG" --title "$TITLE" --notes "$NOTES" --latest
+          else
+            gh release create "$TAG" dist/* --target "$GITHUB_SHA" --title "$TITLE" --notes "$NOTES" --latest
+          fi
+
+          # Delete only the incorrectly numbered v1.1.0 release. Historical
+          # releases from v1.0 onward are deliberately retained for upgrade and
+          # minimum-version policy regression tests.
+          gh release delete v1.1.0 --cleanup-tag --yes || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xvpn-panel-v${{ github.run_number }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Keep only this Actions record
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --paginate "/repos/${GITHUB_REPOSITORY}/actions/runs?per_page=100" \
+            --jq ".workflow_runs[] | select(.id != ${GITHUB_RUN_ID}) | .id" |
+          while read -r run_id; do
+            [ -n "$run_id" ] || continue
+            gh api --method DELETE "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" || true
+          done

@@ -198,14 +198,12 @@ TRUST_PROXY=1
 TOKEN_DAYS=30
 COOKIE_SECURE=0
 XVPN_ANDROID_REPOSITORY=kkx999/XVPN-Android
-IPAPI_IS_KEY=
 EOF
   chmod 600 "$ENV_FILE"
 else
   grep -q '^DATABASE_PATH=' "$ENV_FILE" && sed -i "s#^DATABASE_PATH=.*#DATABASE_PATH=$DATA_DIR/panel.db#" "$ENV_FILE" || echo "DATABASE_PATH=$DATA_DIR/panel.db" >> "$ENV_FILE"
   grep -q '^TRUST_PROXY=' "$ENV_FILE" || echo 'TRUST_PROXY=1' >> "$ENV_FILE"
   grep -q '^XVPN_ANDROID_REPOSITORY=' "$ENV_FILE" || echo 'XVPN_ANDROID_REPOSITORY=kkx999/XVPN-Android' >> "$ENV_FILE"
-  grep -q '^IPAPI_IS_KEY=' "$ENV_FILE" || echo 'IPAPI_IS_KEY=' >> "$ENV_FILE"
   set_env_value PANEL_DOMAIN "$DOMAIN"
   chmod 600 "$ENV_FILE"
 fi
