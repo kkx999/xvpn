@@ -1,0 +1,68 @@
+name: Release XVPN Panel v1.1
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: xvpn-panel-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[release-panel-v1.1]') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run complete Panel self-test
+        run: python selftest.py
+
+      - name: Build and verify release archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(tr -d '[:space:]' < VERSION)" = "1.1"
+          bash build-release.sh dist
+          (cd dist && sha256sum -c SHA256SUMS.txt)
+          unzip -t dist/xvpn-panel-v1.1.zip >/dev/null
+          unzip -Z1 dist/xvpn-panel-v1.1.zip | grep -Fx 'xvpn-panel-v1.1/app/ip_classifier.py'
+
+      - name: Publish GitHub Release v1.1
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view v1.1 >/dev/null 2>&1; then
+            gh release upload v1.1 dist/* --clobber
+            gh release edit v1.1 --title 'XVPN Panel v1.1' --notes-file RELEASE_NOTES.md --latest
+          else
+            gh release create v1.1 dist/* --target "$GITHUB_SHA" \
+              --title 'XVPN Panel v1.1' --notes-file RELEASE_NOTES.md --latest
+          fi
+
+      - name: Upload release archive for audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: xvpn-panel-v1.1
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30

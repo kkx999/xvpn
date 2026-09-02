@@ -16,6 +16,7 @@ Panel 不向 Android 下发 sing-box 配置。节点由 Panel 标准化为 `xvpn
 - `POST /change-password`
 - `GET /nodes`
 - `GET /app/bootstrap`
+- `POST /ip/classify`
 - `POST /traffic/report`
 - `GET /traffic/summary`
 - `GET /app/update`
@@ -57,6 +58,17 @@ Panel 不向 Android 下发 sing-box 配置。节点由 Panel 标准化为 `xvpn
 ```
 
 支持的标准节点协议：VLESS、VMess、Trojan、Shadowsocks、Hysteria2、TUIC、AnyTLS。
+
+## 出口 IP 分类
+
+`POST /ip/classify` 需要 Bearer Token，并接收客户端通过独立出口检测得到的明确公网 IP：
+
+```json
+{"ip": "8.8.8.8"}
+```
+
+Panel 在服务端查询并缓存分类结果，返回 `datacenter`、`residential` 或 `unknown`。可选环境变量
+`IPAPI_IS_KEY` 用于取得 ipapi.is 完整检测字段；密钥不会下发到 Android。
 
 ## 同步、流量与版本策略
 

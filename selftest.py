@@ -3,6 +3,7 @@ import base64
 import json
 import os
 import tempfile
+from unittest.mock import patch
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -62,6 +63,7 @@ def main():
         from app.crypto import encrypt_text
         from app.db import bootstrap_admin, connect, init_db, utcnow
         from app.settings_store import get_settings, set_settings
+        from app.ip_classifier import classify_payload, normalize_public_ip
 
         # Concurrent first boot must create exactly one administrator.
         race_app = Flask("xvpn-bootstrap-selftest")
@@ -98,6 +100,28 @@ def main():
             "protocol parser mismatch",
         )
 
+        classified = classify_payload({
+            "ip": "8.8.8.8",
+            "company": {"name": "Google Cloud", "type": "hosting"},
+            "location": {"country_code": "US"},
+            "is_datacenter": True,
+        }, "8.8.8.8", keyed=True)
+        require(classified["classification"] == "datacenter", "keyed datacenter classification failed")
+        require(classified["country_code"] == "US", "classification country code failed")
+        conservative = classify_payload({
+            "ip": "8.8.4.4",
+            "company": {"name": "Example Business", "type": "business"},
+            "is_datacenter": False,
+        }, "8.8.4.4", keyed=True)
+        require(conservative["classification"] == "unknown", "non-datacenter was mislabeled residential")
+        require(normalize_public_ip("2606:4700:4700::1111") == "2606:4700:4700::1111", "IPv6 normalization failed")
+        try:
+            normalize_public_ip("127.0.0.1")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("private IP classification was accepted")
+
         expect_invalid(
             _canonical,
             '{"schema":"xvpn.node.v1","protocol":"vless","server":"x.example.com","port":443,"auth":{},"tls":{"enabled":false},"transport":{"type":"tcp"},"options":{}}',
@@ -125,7 +149,7 @@ def main():
         health = client.get("/api/v1/health")
         require(health.status_code == 200, "health endpoint failed")
         health_json = health.get_json() or {}
-        require(health_json.get("version") == "1.0", "panel version mismatch")
+        require(health_json.get("version") == "1.1", "panel version mismatch")
         require(health_json.get("core") == "mihomo", "health core mismatch")
         require(client.get("/admin/login").status_code == 200, "default admin path failed")
         require(client.get("/not-admin/login").status_code == 404, "unexpected admin alias exposed")
@@ -177,6 +201,16 @@ def main():
         require((bootstrap_json.get("nodes") or {}).get("node_schema") == "xvpn.node.v1", "bootstrap node schema mismatch")
         require(bootstrap_json.get("traffic_report_interval_seconds") == 10, "traffic interval mismatch")
         require((bootstrap_json.get("nodes") or {}).get("revision"), "node revision missing")
+        require(bootstrap_json.get("exit_ip_classification") is True, "IP classification capability missing")
+
+        with patch("app.api.classify_ip", return_value={
+            "ok": True, "ip": "8.8.8.8", "classification": "datacenter",
+            "type_label": "机房 IP", "provider": "Google LLC", "country_code": "US",
+            "confidence": "high", "source": "selftest", "cached": False,
+        }):
+            ip_result = client.post("/api/v1/ip/classify", headers=auth, json={"ip": "8.8.8.8"})
+        require(ip_result.status_code == 200, "IP classification API failed")
+        require((ip_result.get_json() or {}).get("classification") == "datacenter", "IP classification response mismatch")
 
         # Minimum-version policy applies to protected APIs, not only /app/update.
         with app.app_context():

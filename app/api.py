@@ -11,6 +11,7 @@ from .app_updates import app_update_payload
 from .crypto import decrypt_text
 from .db import connect, transaction, utcnow
 from .node_profile import canonical_profile
+from .ip_classifier import classify_ip
 from .traffic import traffic_period_keys, traffic_summary
 from .version import APP_VERSION
 from .settings_store import get_settings
@@ -232,6 +233,7 @@ def api_index():
         "panel_timezone": current_app.config.get("PANEL_TIMEZONE", "UTC"),
         "app_update_api": True,
         "app_update_check_interval_seconds": 43200,
+        "exit_ip_classification": True,
     }
 
 
@@ -356,6 +358,19 @@ def me():
         "ok": True,
         "user": {"id": g.user["id"], "username": g.user["username"], "status": "active", "role": g.user.get("role", "user")},
     }
+
+
+@api_bp.post("/ip/classify")
+@bearer_required
+def ip_classify():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return response_error("INVALID_JSON", "请求内容必须是 JSON")
+    try:
+        result = classify_ip(data.get("ip"), current_app.config.get("IPAPI_IS_KEY", ""))
+    except ValueError as error:
+        return response_error("INVALID_IP", str(error))
+    return jsonify(result)
 
 
 @api_bp.post("/change-password")
@@ -484,6 +499,7 @@ def app_bootstrap():
         "panel_timezone": current_app.config.get("PANEL_TIMEZONE", "UTC"),
         "app_update_api": True,
         "app_update_check_interval_seconds": 43200,
+        "exit_ip_classification": True,
         "core": "mihomo",
         "node_schema": "xvpn.node.v1",
         "user": {"id": g.user["id"], "username": g.user["username"], "status": "active", "role": g.user.get("role", "user")},

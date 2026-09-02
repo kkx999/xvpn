@@ -1,6 +1,6 @@
-# XVPN Panel v1.0
+# XVPN Panel v1.1
 
-XVPN Panel v1.0 是配套 **XVPN Android + Mihomo Core** 的当前正式控制面板。
+XVPN Panel v1.1 是配套 **XVPN Android + Mihomo Core** 的当前正式控制面板。
 
 ## 一键安装
 
@@ -67,6 +67,15 @@ Panel 不再向 Android 下发 sing-box 配置，也不保留旧 raw-config API 
 - 用户流量详情页每 10 秒自动刷新，显示今日、本月、累计及最后上报时间。
 - 最低运行版本会在所有受保护 App API 上执行，旧版本不能绕过限制继续使用。
 - App 更新接口提供 APK、大小、SHA-256、包名、签名和 Release 信息。
+- 出口 IP 由 Android 双源验证后交给 Panel 分类；服务端缓存结果，API Key 不会写入 APK。
+
+如需 ipapi.is 完整的机房检测字段，可在 `/etc/xvpn-panel.env` 增加可选配置：
+
+```bash
+IPAPI_IS_KEY=你的密钥
+```
+
+不配置密钥时仍可使用匿名元数据与保守运营商识别，不影响连接功能。
 
 ---
 
